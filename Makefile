@@ -13,10 +13,11 @@ endif
 UNAME_S := $(shell uname -s)
 
 CMAKE_BUILD_TYPE ?= Debug
+CMAKE_PRESET := $(shell echo $(CMAKE_BUILD_TYPE) | tr '[:upper:]' '[:lower:]')
 
 .PHONY: clean
 clean: ## Remove build artifacts
-	cmake --build build/debug --target clean
+	cmake --build build/$(CMAKE_PRESET) --target clean
 
 .PHONY: setup
 setup: ## Install development dependencies
@@ -39,19 +40,16 @@ endif
 
 .PHONY: configure
 configure: ## Configure CMake cache
-	cmake -S . -B build \
-		-DSUMMA_BUILD_EXAMPLES=ON \
-		-DSUMMA_BUILD_TESTS=ON \
-		-DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE)
+	cmake --preset $(CMAKE_PRESET)
 
 .PHONY: build
 build: ## Build all targets (library is header-only; builds tests and examples)
-	cmake --build build
+	cmake --build --preset $(CMAKE_PRESET)
 
 .PHONY: test
 test: ## Build and run all tests
-	cmake --build build
-	cd build && ctest
+	cmake --build --preset $(CMAKE_PRESET)
+	ctest --preset $(CMAKE_PRESET)
 
 .PHONY: format
 format: ## Format all source files
