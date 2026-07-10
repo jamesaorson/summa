@@ -8,7 +8,7 @@ applications built on top of them (a Scheme interpreter, a game engine, etc.).
 Two distinct kinds of output live here:
 
 | Kind | Location | Output |
-|------|----------|--------|
+| ---------------------------- | ------------------------------------ | ---------------------------------- |
 | Single-file header libraries | `include/summa/<name>.h` | header only — no compiled artifact |
 | Applications | `<app>/` (e.g. `scheme/`, `engine/`) | binary or static/shared library |
 
@@ -40,7 +40,7 @@ Two distinct kinds of output live here:
 
 ## Repository Layout
 
-```
+```plaintext
 include/summa/          # Public headers — one .h per library
 tests/                  # Unity test files — one .test.c per library
 examples/               # Usage examples — one subdir per library
@@ -89,6 +89,7 @@ Follow this checklist exactly — every library needs all four steps.
 ```
 
 Naming conventions:
+
 - Include guard: `SUMMA_<NAME>_H`
 - Functions: `summa_<name>_<verb>(…)`
 - Types: `summa_<name>_t`
@@ -140,6 +141,7 @@ Applications (Scheme interpreter, game engine, etc.) live in their own top-level
 subdirectory and are wired into the root `CMakeLists.txt` via `add_subdirectory`.
 
 Guidelines:
+
 - The application's own `CMakeLists.txt` owns its targets, flags, and install rules.
 - It may link against `summa::summa` freely.
 - It must still have zero external runtime dependencies — use or extend summa headers

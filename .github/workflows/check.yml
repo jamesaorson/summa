@@ -13,7 +13,13 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
 
       - name: Install clang-format
         run: |
@@ -21,6 +27,10 @@ jobs:
           sudo apt-get install -y \
             clang-format
 
-      - name: Check code quality
+      - name: Check C code
         run: |
-          make check
+          make check/c
+
+      - name: Check Markdown
+        run: |
+          make check/markdown
