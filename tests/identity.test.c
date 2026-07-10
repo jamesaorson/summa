@@ -1,4 +1,5 @@
 #include <summa/identity.h>
+#include <summa/identity.h> /* verify include guard */
 
 #include <unity.h>
 
