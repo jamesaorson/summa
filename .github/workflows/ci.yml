@@ -24,13 +24,9 @@ jobs:
         run: |
           make configure
 
-      - name: Build library
+      - name: Build
         run: |
           make build
-
-      - name: Build examples
-        run: |
-          make build/all/examples
 
       - name: Test
         run: |

@@ -45,12 +45,7 @@ configure: ## Configure CMake cache
 		-DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE)
 
 .PHONY: build
-build: ## Build the library
-	cmake --build build \
-		--target summa
-
-.PHONY: build/all/examples
-build/all/examples: ## Build all examples
+build: ## Build all targets (library is header-only; builds tests and examples)
 	cmake --build build
 
 .PHONY: test
