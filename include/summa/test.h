@@ -1,92 +1,31 @@
-/*
- * summa/test.h — single-file unit testing framework (STB-style)
- *
- * USAGE
- *   In exactly one translation unit, before the include:
- *
- *       #define SUMMA_TEST_IMPLEMENTATION
- *       #include <summa/test.h>
- *
- *   All other translation units that need only the API:
- *
- *       #include <summa/test.h>
- *
- * EXAMPLE
- *
- *   #define SUMMA_TEST_IMPLEMENTATION
- *   #include <summa/test.h>
- *
- *   void test_addition(void)
- *   {
- *       SUMMA_TEST_ASSERT(1 + 1 == 2);
- *       SUMMA_TEST_ASSERT_EQ_INT(42, 40 + 2);
- *   }
- *
- *   int main(void)
- *   {
- *       summa_test_begin("arithmetic");
- *       SUMMA_TEST_RUN(test_addition);
- *       return summa_test_end();
- *   }
- *
- * No external dependencies. C23.
- */
-
 #ifndef SUMMA_TEST_H
 #define SUMMA_TEST_H
+
+/* summa/test.h — unit testing framework. See docs/test/DOCS.md. */
 
 #include <stdio.h>
 #include <string.h>
 
-/* ── Types ───────────────────────────────────────────────────────────────── */
-
-/* Internal context — treat as opaque; access only through the API below. */
 typedef struct {
     const char* suite;
     int         tests_passed;
     int         tests_failed;
-    int         _assert_failed; /* non-zero if current test has a failing assertion */
+    int         _assert_failed;
 } summa_test_ctx_t;
 
-/* Failure descriptor passed to summa_test_assert_fail(). */
 typedef struct {
     const char* file;
     int         line;
     const char* expr;
-    const char* message; /* may be NULL */
+    const char* message;
 } summa_test_failure_t;
 
-/* ── Global state ────────────────────────────────────────────────────────── */
-
-/* Defined in the implementation; declared here for use by macros. */
 extern summa_test_ctx_t summa_test_ctx;
 
-/* ── Lifecycle ───────────────────────────────────────────────────────────── */
-
-/*
- * summa_test_begin - initialise a test suite.
- * Call once before any SUMMA_TEST_RUN().
- */
 void summa_test_begin(const char* suite_name);
-
-/*
- * summa_test_end - print a summary and return an exit code.
- * Returns 0 when every test passed, 1 otherwise.
- * Pass the return value directly to exit() / return from main().
- */
-int summa_test_end(void);
-
-/* ── Low-level assertion reporting (called by macros) ────────────────────── */
-
+int  summa_test_end(void);
 void summa_test_assert_fail(const summa_test_failure_t* f);
 
-/* ── Assertion macros ────────────────────────────────────────────────────── */
-
-/*
- * SUMMA_TEST_ASSERT(expr)
- * Fail the current test if expr is false.
- * All assertions in a test function are always evaluated (no early exit).
- */
 #define SUMMA_TEST_ASSERT(expr)                                          \
     do {                                                                 \
         if (!(expr)) {                                                   \
@@ -95,10 +34,6 @@ void summa_test_assert_fail(const summa_test_failure_t* f);
         }                                                                \
     } while (0)
 
-/*
- * SUMMA_TEST_ASSERT_MSG(expr, msg)
- * Like SUMMA_TEST_ASSERT but prints msg on failure.
- */
 #define SUMMA_TEST_ASSERT_MSG(expr, msg)                                  \
     do {                                                                  \
         if (!(expr)) {                                                    \
@@ -107,11 +42,9 @@ void summa_test_assert_fail(const summa_test_failure_t* f);
         }                                                                 \
     } while (0)
 
-/* Equality / inequality */
 #define SUMMA_TEST_ASSERT_EQ(a, b) SUMMA_TEST_ASSERT((a) == (b))
 #define SUMMA_TEST_ASSERT_NEQ(a, b) SUMMA_TEST_ASSERT((a) != (b))
 
-/* Typed equality — prints both values on failure */
 #define SUMMA_TEST_ASSERT_EQ_INT(expected, actual)                                          \
     do {                                                                                    \
         int _e = (expected), _a = (actual);                                                 \
@@ -134,17 +67,9 @@ void summa_test_assert_fail(const summa_test_failure_t* f);
         }                                                                                                        \
     } while (0)
 
-/* Pointer checks */
 #define SUMMA_TEST_ASSERT_NULL(ptr) SUMMA_TEST_ASSERT((ptr) == nullptr)
 #define SUMMA_TEST_ASSERT_NOT_NULL(ptr) SUMMA_TEST_ASSERT((ptr) != nullptr)
 
-/* ── Test runner macro ───────────────────────────────────────────────────── */
-
-/*
- * SUMMA_TEST_RUN(fn)
- * Runs fn(), then records it as passed or failed based on whether any
- * SUMMA_TEST_ASSERT inside fn() fired.  Prints a one-line result.
- */
 #define SUMMA_TEST_RUN(fn)                   \
     do {                                     \
         summa_test_ctx._assert_failed = 0;   \
@@ -159,8 +84,6 @@ void summa_test_assert_fail(const summa_test_failure_t* f);
     } while (0)
 
 #endif /* SUMMA_TEST_H */
-
-/* ── Implementation ──────────────────────────────────────────────────────── */
 
 #ifdef SUMMA_TEST_IMPLEMENTATION
 
@@ -189,7 +112,7 @@ void summa_test_assert_fail(const summa_test_failure_t* f) {
     summa_test_ctx._assert_failed = 1;
     printf("    ASSERT  %s  (%s:%d)", f->expr, f->file, f->line);
     if (f->message)
-        printf("\n    ↳  %s", f->message);
+        printf("\n    ->  %s", f->message);
     printf("\n");
 }
 
