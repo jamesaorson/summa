@@ -40,14 +40,14 @@ endif
 .PHONY: configure
 configure: ## Configure CMake cache
 	cmake -S . -B build \
-		-DJAMESAORSON_TEMPLATE_CPP_BUILD_EXAMPLES=ON \
-		-DJAMESAORSON_TEMPLATE_CPP_BUILD_TESTS=ON \
+		-DSUMMA_BUILD_EXAMPLES=ON \
+		-DSUMMA_BUILD_TESTS=ON \
 		-DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE)
 
 .PHONY: build
 build: ## Build the library
 	cmake --build build \
-		--target jamesaorson.template_cpp
+		--target summa
 
 .PHONY: build/all/examples
 build/all/examples: ## Build all examples
@@ -60,7 +60,7 @@ test: ## Build and run all tests
 
 .PHONY: format
 format: ## Format all source files
-	find . -type f \( -name "*.h" -o -name "*.hpp" -o -name "*.cpp" \) \
+	find . -type f \( -name "*.h" -o -name "*.c" \) \
 		-not -path "./build/*" \
 		-print0 | xargs -0 clang-format -i
 

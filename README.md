@@ -1,23 +1,21 @@
-# template-cpp
+# summa
 
-A minimal C++ library template.
+A mega-repo of single-file C libraries.
 
 ## Structure
 
 ```
-include/template_cpp/   # Public headers
-src/template_cpp/       # Library sources
-tests/                  # Tests (GTest via FetchContent)
-examples/               # Usage examples
+include/summa/   # Public headers (one .h per library)
+tests/           # Tests (Unity via FetchContent)
+examples/        # Usage examples
 ```
 
 ## Usage
 
-```cpp
-#include <template_cpp/identity.hpp>
+```c
+#include <summa/identity.h>
 
-template_cpp::identity id;
-auto x = id(42); // 42
+int x = summa_identity(42); /* 42 */
 ```
 
 ## Building

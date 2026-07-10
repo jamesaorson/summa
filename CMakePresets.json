@@ -8,8 +8,8 @@
             "binaryDir": "${sourceDir}/build/${presetName}",
             "cacheVariables": {
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "JAMESAORSON_TEMPLATE_CPP_BUILD_EXAMPLES": "ON",
-                "JAMESAORSON_TEMPLATE_CPP_BUILD_TESTS": "ON"
+                "SUMMA_BUILD_EXAMPLES": "ON",
+                "SUMMA_BUILD_TESTS": "ON"
             }
         },
         {
