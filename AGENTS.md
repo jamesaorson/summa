@@ -7,10 +7,10 @@ applications built on top of them (a Scheme interpreter, a game engine, etc.).
 
 Two distinct kinds of output live here:
 
-| Kind | Location | Output |
+| Kind                         | Location                             | Output                             |
 | ---------------------------- | ------------------------------------ | ---------------------------------- |
-| Single-file header libraries | `include/summa/<name>.h` | header only — no compiled artifact |
-| Applications | `<app>/` (e.g. `scheme/`, `engine/`) | binary or static/shared library |
+| Single-file header libraries | `include/summa/<name>.h`             | header only — no compiled artifact |
+| Applications                 | `<app>/` (e.g. `scheme/`, `engine/`) | binary or static/shared library    |
 
 ---
 
@@ -20,7 +20,7 @@ Two distinct kinds of output live here:
 
 **The library headers must have no third-party dependencies — ever.**
 
-- Only the C17 standard library is permitted inside `include/summa/`.
+- Only the C23 standard library is permitted inside `include/summa/`.
 - Applications may use summa headers as building blocks, but still no third-party
   runtime deps. Write the utility code you need as a summa header first, then use it.
 - Unity (test framework) is the sole exception: it is a build-time dev dependency
@@ -29,9 +29,9 @@ Two distinct kinds of output live here:
   explicit approval. The answer to "can I pull in lib X?" is almost always "write
   it as a summa header instead."
 
-### C17, No Extensions
+### C23, No Extensions
 
-- `LANGUAGES C`, `CMAKE_C_STANDARD 17`, `CMAKE_C_EXTENSIONS OFF`.
+- `LANGUAGES C`, `CMAKE_C_STANDARD 23`, `CMAKE_C_EXTENSIONS OFF`.
 - No compiler-specific extensions (`__attribute__`, `#pragma once`, etc.) unless
   guarded by a feature macro and with a portable fallback.
 - All code must compile clean under `-Wall -Wextra -Wpedantic -Werror`.
@@ -80,7 +80,7 @@ Follow this checklist exactly — every library needs all four steps.
 /*
  * summa/<name>.h — one-line description
  *
- * No external dependencies. C17.
+ * No external dependencies. C23.
  */
 
 /* public API here */
