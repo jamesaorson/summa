@@ -13,7 +13,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install clang-format
         run: |
@@ -21,9 +21,6 @@ jobs:
           sudo apt-get install -y \
             clang-format
 
-      - name: Format sources
+      - name: Check code quality
         run: |
-          find . -type f \( -name "*.h" -o -name "*.cpp" \) -print0 | xargs -0 clang-format -i
-
-      - name: Check for changes
-        run: git diff --exit-code
+          make check

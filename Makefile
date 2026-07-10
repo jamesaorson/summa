@@ -13,21 +13,28 @@ endif
 UNAME_S := $(shell uname -s)
 
 CMAKE_BUILD_TYPE ?= Debug
-
-.PHONY: clean
-clean: ## Remove build artifacts
-	cmake --build build/debug --target clean
+CMAKE_PRESET := $(shell echo $(CMAKE_BUILD_TYPE) | tr '[:upper:]' '[:lower:]')
 
 .PHONY: setup
-setup: ## Install development dependencies
+setup: setup/hooks setup/tools ## Install all dependencies and development tools
+
+.PHONY: setup/hooks
+setup/hooks: ## Install git hooks
+	ln -sf "$(PWD)/git/hooks/pre-commit" .git/hooks/pre-commit
+	echo "✅ Git hooks installed"
+
+.PHONY: setup/tools
+setup/tools: ## Install development tools
 ifeq ($(UNAME_S),Linux)
 	sudo apt-get update
 	sudo apt-get install -y \
 		build-essential \
+		gdb \
 		cmake \
 		ninja-build \
 		clang-format
 else ifeq ($(UNAME_S),Darwin)
+	xcode-select -p >/dev/null 2>&1 || xcode-select --install
 	brew install \
 		cmake \
 		ninja \
@@ -37,27 +44,36 @@ else
 	exit 1
 endif
 
-.PHONY: configure
-configure: ## Configure CMake cache
-	cmake -S . -B build \
-		-DSUMMA_BUILD_EXAMPLES=ON \
-		-DSUMMA_BUILD_TESTS=ON \
-		-DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE)
-
 .PHONY: build
 build: ## Build all targets (library is header-only; builds tests and examples)
-	cmake --build build
+	cmake --build --preset $(CMAKE_PRESET)
 
-.PHONY: test
-test: ## Build and run all tests
-	cmake --build build
-	cd build && ctest
+.PHONY: check
+check: ## Check formatting
+	$(MAKE) format/common CLANG_FORMAT_OPTIONS="--dry-run --Werror"
+
+.PHONY: clean
+clean: ## Remove build artifacts
+	cmake --build build/$(CMAKE_PRESET) --target clean
+
+.PHONY: configure
+configure: ## Configure CMake cache
+	cmake --preset $(CMAKE_PRESET)
 
 .PHONY: format
 format: ## Format all source files
+	$(MAKE) format/common CLANG_FORMAT_OPTIONS="-i"
+
+.PHONY: format/common
+format/common: ## Format common source files
 	find . -type f \( -name "*.h" -o -name "*.c" \) \
 		-not -path "./build/*" \
-		-print0 | xargs -0 clang-format -i
+		-print0 | xargs -0 clang-format $(CLANG_FORMAT_OPTIONS)
+
+.PHONY: test
+test: ## Build and run all tests
+	cmake --build --preset $(CMAKE_PRESET)
+	ctest --preset $(CMAKE_PRESET)
 
 env-%: ## Verify a required environment variable is set
 	if [ -z "$($*)" ]; then \
