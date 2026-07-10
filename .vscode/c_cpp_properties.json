@@ -8,7 +8,7 @@
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",
-            "cStandard": "c17",
+            "cStandard": "c23",
             "intelliSenseMode": "${default}",
             "compileCommands": "${workspaceFolder}/build/debug/compile_commands.json",
             "macFrameworkPath": [
@@ -23,7 +23,7 @@
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",
-            "cStandard": "c17",
+            "cStandard": "c23",
             "intelliSenseMode": "${default}",
             "compileCommands": "${workspaceFolder}/build/release/compile_commands.json",
             "macFrameworkPath": [

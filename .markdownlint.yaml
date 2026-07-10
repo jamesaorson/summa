@@ -6,5 +6,5 @@ line-length:
 no-duplicate-heading:
   siblings_only: true
 table-column-style:
-  style: compact
+  style: aligned
   strict: true
