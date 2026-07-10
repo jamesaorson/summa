@@ -25,7 +25,7 @@ Two distinct kinds of output live here:
   runtime deps. Write the utility code you need as a summa header first, then use it.
 - Do not add `FetchContent_Declare` calls for anything. The answer to
   "can I pull in lib X?" is always "write it as a summa header instead."
-- The test framework is `summa/test.h` — in-repo, zero external deps.
+- The test framework is `summa/test/test.h` — in-repo, zero external deps.
 
 ### C23, No Extensions
 
@@ -128,7 +128,7 @@ Naming conventions:
 
 ```c
 #define SUMMA_TEST_IMPLEMENTATION
-#include <summa/test.h>
+#include <summa/test/test.h>
 
 #include <summa/name.h>
 #include <summa/name.h> /* verify include guard */

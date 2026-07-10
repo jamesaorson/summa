@@ -1,5 +1,5 @@
 #define SUMMA_TEST_IMPLEMENTATION
-#include <summa/test.h>
+#include <summa/test/test.h>
 
 #include <summa/identity.h>
 #include <summa/identity.h> /* verify include guard */

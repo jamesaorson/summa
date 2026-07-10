@@ -1,7 +1,7 @@
 #ifndef SUMMA_TEST_H
 #define SUMMA_TEST_H
 
-/* summa/test.h — unit testing framework. See docs/test/DOCS.md. */
+/* test.h — unit testing framework. See docs/test/DOCS.md. */
 
 #include <stdio.h>
 #include <string.h>
