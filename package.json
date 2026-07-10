@@ -1,0 +1,11 @@
+{
+  "scripts": {
+    "lint": "npm run lint:markdown",
+    "lint:markdown": "npx markdownlint '**/*.md'",
+    "format": "npm run format:markdown",
+    "format:markdown": "npx markdownlint '**/*.md' --fix"
+  },
+  "devDependencies": {
+    "markdownlint-cli": "^0.49.0"
+  }
+}

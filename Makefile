@@ -49,8 +49,15 @@ build: ## Build all targets (library is header-only; builds tests and examples)
 	cmake --build --preset $(CMAKE_PRESET)
 
 .PHONY: check
-check: ## Check formatting
-	$(MAKE) format/common CLANG_FORMAT_OPTIONS="--dry-run --Werror"
+check: check/c check/markdown ## Check formatting
+
+.PHONY: check/c
+check/c: ## Check formatting for C
+	$(MAKE) format/c/common CLANG_FORMAT_OPTIONS="--dry-run --Werror"
+
+.PHONY: check/markdown
+check/markdown: ## Check formatting for markdown
+	npm run lint:markdown
 
 .PHONY: clean
 clean: ## Remove build artifacts
@@ -61,14 +68,21 @@ configure: ## Configure CMake cache
 	cmake --preset $(CMAKE_PRESET)
 
 .PHONY: format
-format: ## Format all source files
-	$(MAKE) format/common CLANG_FORMAT_OPTIONS="-i"
+format: format/c format/markdown ## Format all files
 
-.PHONY: format/common
-format/common: ## Format common source files
+.PHONY: format/c
+format/c: ## Format all source files
+	$(MAKE) format/c/common CLANG_FORMAT_OPTIONS="-i"
+
+.PHONY: format/c/common
+format/c/common: ## Format common source files
 	find . -type f \( -name "*.h" -o -name "*.c" \) \
 		-not -path "./build/*" \
 		-print0 | xargs -0 clang-format $(CLANG_FORMAT_OPTIONS)
+
+.PHONY: format/markdown
+format/markdown: ## Format all markdown files
+	npm run format:markdown
 
 .PHONY: test
 test: ## Build and run all tests

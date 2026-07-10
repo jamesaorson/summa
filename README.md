@@ -4,7 +4,7 @@ A mega-repo of single-file C libraries.
 
 ## Structure
 
-```
+```plaintext
 include/summa/   # Public headers (one .h per library)
 tests/           # Tests (Unity via FetchContent)
 examples/        # Usage examples
