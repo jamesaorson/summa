@@ -25,10 +25,12 @@ ifeq ($(UNAME_S),Linux)
 	sudo apt-get update
 	sudo apt-get install -y \
 		build-essential \
+		gdb \
 		cmake \
 		ninja-build \
 		clang-format
 else ifeq ($(UNAME_S),Darwin)
+	xcode-select -p >/dev/null 2>&1 || xcode-select --install
 	brew install \
 		cmake \
 		ninja \
