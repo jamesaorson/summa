@@ -23,11 +23,9 @@ Two distinct kinds of output live here:
 - Only the C23 standard library is permitted inside `include/summa/`.
 - Applications may use summa headers as building blocks, but still no third-party
   runtime deps. Write the utility code you need as a summa header first, then use it.
-- Unity (test framework) is the sole exception: it is a build-time dev dependency
-  pulled via `FetchContent`, never a runtime dependency and never vendored.
-- Do not add `FetchContent_Declare` calls for anything other than Unity without
-  explicit approval. The answer to "can I pull in lib X?" is almost always "write
-  it as a summa header instead."
+- Do not add `FetchContent_Declare` calls for anything. The answer to
+  "can I pull in lib X?" is always "write it as a summa header instead."
+- The test framework is `summa/test.h` — in-repo, zero external deps.
 
 ### C23, No Extensions
 
@@ -42,7 +40,7 @@ Two distinct kinds of output live here:
 
 ```plaintext
 include/summa/          # Public headers — one .h per library
-tests/                  # Unity test files — one .test.c per library
+tests/                  # Test files — one .test.c per library
 examples/               # Usage examples — one subdir per library
 docs/                   # Reference docs (e.g. r7rs-small.pdf)
 git/hooks/              # Dev hooks (install via make setup/hooks)
@@ -67,11 +65,9 @@ green.
 
 ---
 
-## Adding a Single-File Header Library
+## Single-File Header Layout (STB-style)
 
-Follow this checklist exactly — every library needs all four steps.
-
-### 1. The header — `include/summa/<name>.h`
+Every header follows the same two-section structure:
 
 ```c
 #ifndef SUMMA_NAME_H
@@ -79,18 +75,51 @@ Follow this checklist exactly — every library needs all four steps.
 
 /*
  * summa/<name>.h — one-line description
- *
  * No external dependencies. C23.
  */
 
-/* public API here */
+/* ── Types ─── */
+/* struct / typedef / enum declarations */
+
+/* ── API ───── */
+/* extern declarations and macros only — no definitions */
+void summa_name_do_thing(int x);
 
 #endif /* SUMMA_NAME_H */
+
+/* ── Implementation ── */
+#ifdef SUMMA_NAME_IMPLEMENTATION
+
+void summa_name_do_thing(int x) { /* ... */ }
+
+#endif /* SUMMA_NAME_IMPLEMENTATION */
 ```
+
+Rules:
+
+- Everything above `#endif /* SUMMA_NAME_H */` is the **declaration section** — types,
+  `extern` function declarations, and macros. Compiled in every translation unit.
+- Everything inside `#ifdef SUMMA_NAME_IMPLEMENTATION` is the **definition section** —
+  function bodies and global variable definitions. Exactly one translation unit must
+  `#define SUMMA_NAME_IMPLEMENTATION` before the include.
+- The `IMPLEMENTATION` guard sits **outside** the header guard so it can be triggered
+  independently of include deduplication.
+
+---
+
+## Adding a Single-File Header Library
+
+Follow this checklist exactly — every library needs all four steps.
+
+### 1. The header — `include/summa/<name>.h`
+
+Write the declaration section (types + function signatures) first, then the
+implementation section. See the STB-style layout above.
 
 Naming conventions:
 
 - Include guard: `SUMMA_<NAME>_H`
+- Implementation guard: `SUMMA_<NAME>_IMPLEMENTATION`
 - Functions: `summa_<name>_<verb>(…)`
 - Types: `summa_<name>_t`
 - Constants / macros: `SUMMA_<NAME>_<CONSTANT>`
@@ -98,21 +127,22 @@ Naming conventions:
 ### 2. The test — `tests/<name>.test.c`
 
 ```c
+#define SUMMA_TEST_IMPLEMENTATION
+#include <summa/test.h>
+
 #include <summa/name.h>
 #include <summa/name.h> /* verify include guard */
 
-#include <unity.h>
-
-void setUp(void)    {}
-void tearDown(void) {}
-
-void test_name_something(void) { /* … */ }
+void test_name_something(void)
+{
+    SUMMA_TEST_ASSERT(/* ... */);
+}
 
 int main(void)
 {
-    UNITY_BEGIN();
-    RUN_TEST(test_name_something);
-    return UNITY_END();
+    summa_test_begin("name");
+    SUMMA_TEST_RUN(test_name_something);
+    return summa_test_end();
 }
 ```
 
@@ -120,7 +150,7 @@ int main(void)
 
 ```cmake
 add_executable(summa.tests.<name> <name>.test.c)
-target_link_libraries(summa.tests.<name> PRIVATE unity summa::summa)
+target_link_libraries(summa.tests.<name> PRIVATE summa::summa)
 add_test(NAME summa.<name> COMMAND summa.tests.<name>)
 summa_add_test(summa.tests.<name>)   # strict flags + ASan/UBSan
 ```
