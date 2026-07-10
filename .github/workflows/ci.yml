@@ -16,6 +16,8 @@ jobs:
       matrix:
         build_type: [Debug, Release]
     name: ci (${{ matrix.build_type }})
+    env:
+      CMAKE_BUILD_TYPE: ${{ matrix.build_type }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -26,7 +28,7 @@ jobs:
 
       - name: Configure
         run: |
-          make configure CMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          make configure
 
       - name: Build
         run: |
