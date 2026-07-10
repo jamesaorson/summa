@@ -12,6 +12,10 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build_type: [Debug, Release]
+    name: ci (${{ matrix.build_type }})
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,23 +26,20 @@ jobs:
 
       - name: Configure
         run: |
-          make configure
+          make configure CMAKE_BUILD_TYPE=${{ matrix.build_type }}
 
-      - name: Build library
+      - name: Build
         run: |
           make build
-
-      - name: Build examples
-        run: |
-          make build/all/examples
 
       - name: Test
         run: |
           make test
 
       - name: Upload examples
+        if: matrix.build_type == 'Release'
         uses: actions/upload-artifact@v4
         with:
-          name: template-cpp-examples
+          name: summa-examples
           path: |
             build/examples/examples.*

@@ -1,17 +1,28 @@
 include(FetchContent)
 FetchContent_Declare(
-    googletest
-    URL https://github.com/google/googletest/archive/refs/tags/v1.17.0.zip
+    unity
+    GIT_REPOSITORY https://github.com/ThrowTheSwitch/Unity.git
+    GIT_TAG        v2.6.1
 )
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googletest)
+FetchContent_MakeAvailable(unity)
 
-add_executable(jamesaorson.template_cpp.tests.identity identity.test.cpp)
-set_property(TARGET jamesaorson.template_cpp.tests.identity PROPERTY CXX_STANDARD 20)
-target_link_libraries(
-    jamesaorson.template_cpp.tests.identity
-    PRIVATE jamesaorson::template_cpp GTest::gtest_main
-)
+# summa_add_test(<target>)
+# Configures a test executable with strict compiler flags and, in Debug builds,
+# AddressSanitizer + UndefinedBehaviorSanitizer.
+function(summa_add_test target)
+    target_compile_options(${target} PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+        -Werror
+        $<$<CONFIG:Debug>:-fsanitize=address,undefined>
+    )
+    target_link_options(${target} PRIVATE
+        $<$<CONFIG:Debug>:-fsanitize=address,undefined>
+    )
+endfunction()
 
-include(GoogleTest)
-gtest_discover_tests(jamesaorson.template_cpp.tests.identity)
+add_executable(summa.tests.identity identity.test.c)
+target_link_libraries(summa.tests.identity PRIVATE unity summa::summa)
+add_test(NAME summa.identity COMMAND summa.tests.identity)
+summa_add_test(summa.tests.identity)
