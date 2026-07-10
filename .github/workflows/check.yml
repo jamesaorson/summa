@@ -1,0 +1,29 @@
+name: Check code quality
+
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang-format
+
+      - name: Format sources
+        run: |
+          find . -type f \( -name "*.h" -o -name "*.cpp" \) -print0 | xargs -0 clang-format -i
+
+      - name: Check for changes
+        run: git diff --exit-code
