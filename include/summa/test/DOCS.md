@@ -1,4 +1,4 @@
-# summa/test.h
+# test.h
 
 Single-file unit testing framework. STB-style: types and declarations are always
 compiled; function definitions live behind `#define SUMMA_TEST_IMPLEMENTATION`.
@@ -9,20 +9,20 @@ In exactly one translation unit, define the implementation before the include:
 
 ```c
 #define SUMMA_TEST_IMPLEMENTATION
-#include <summa/test.h>
+#include <summa/test/test.h>
 ```
 
 All other translation units that need only the API:
 
 ```c
-#include <summa/test.h>
+#include <summa/test/test.h>
 ```
 
 ## Example
 
 ```c
 #define SUMMA_TEST_IMPLEMENTATION
-#include <summa/test.h>
+#include <summa/test/test.h>
 
 void test_addition(void)
 {
@@ -64,16 +64,16 @@ on the first failure.
 
 ### Assertions
 
-| Macro                                        | Fails when                         |
-| -------------------------------------------- | ---------------------------------- |
-| `SUMMA_TEST_ASSERT(expr)`                    | `expr` is false                    |
-| `SUMMA_TEST_ASSERT_MSG(expr, msg)`           | `expr` is false; prints `msg`      |
-| `SUMMA_TEST_ASSERT_EQ(a, b)`                 | `a != b`                           |
-| `SUMMA_TEST_ASSERT_NEQ(a, b)`                | `a == b`                           |
-| `SUMMA_TEST_ASSERT_EQ_INT(expected, actual)` | integers differ; prints both       |
-| `SUMMA_TEST_ASSERT_EQ_STR(expected, actual)` | strings differ; prints both        |
-| `SUMMA_TEST_ASSERT_NULL(ptr)`                | `ptr != nullptr`                   |
-| `SUMMA_TEST_ASSERT_NOT_NULL(ptr)`            | `ptr == nullptr`                   |
+| Macro                                        | Fails when                    |
+| -------------------------------------------- | ----------------------------- |
+| `SUMMA_TEST_ASSERT(expr)`                    | `expr` is false               |
+| `SUMMA_TEST_ASSERT_MSG(expr, msg)`           | `expr` is false; prints `msg` |
+| `SUMMA_TEST_ASSERT_EQ(a, b)`                 | `a != b`                      |
+| `SUMMA_TEST_ASSERT_NEQ(a, b)`                | `a == b`                      |
+| `SUMMA_TEST_ASSERT_EQ_INT(expected, actual)` | integers differ; prints both  |
+| `SUMMA_TEST_ASSERT_EQ_STR(expected, actual)` | strings differ; prints both   |
+| `SUMMA_TEST_ASSERT_NULL(ptr)`                | `ptr != nullptr`              |
+| `SUMMA_TEST_ASSERT_NOT_NULL(ptr)`            | `ptr == nullptr`              |
 
 ### Low-level hook
 

@@ -8,7 +8,7 @@ Zero external dependencies. C23.
 
 ```plaintext
 include/summa/   # Public headers — one .h per library
-tests/           # Tests — one .test.c per library (uses summa/test.h)
+tests/           # Tests — one .test.c per library (uses test.h)
 examples/        # Usage examples
 docs/            # Reference documents
 <app>/           # Application subdirectories (scheme/, engine/, …)
@@ -16,10 +16,10 @@ docs/            # Reference documents
 
 ## Libraries
 
-| Header             | Description                                          |
-| ------------------ | ---------------------------------------------------- |
-| `summa/identity.h` | Returns its argument unchanged (`summa_identity(x)`) |
-| `summa/test.h`     | Single-file unit testing framework (STB-style)       |
+| Header              | Description                                          |
+| ------------------- | ---------------------------------------------------- |
+| `summa/identity.h`  | Returns its argument unchanged (`summa_identity(x)`) |
+| `summa/test/test.h` | Single-file unit testing framework (STB-style)       |
 
 ## Usage
 
@@ -35,7 +35,7 @@ The test framework needs one translation unit to define the implementation:
 
 ```c
 #define SUMMA_TEST_IMPLEMENTATION
-#include <summa/test.h>
+#include <summa/test/test.h>
 
 void test_something(void)
 {
