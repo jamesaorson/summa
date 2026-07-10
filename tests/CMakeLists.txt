@@ -1,11 +1,3 @@
-include(FetchContent)
-FetchContent_Declare(
-    unity
-    GIT_REPOSITORY https://github.com/ThrowTheSwitch/Unity.git
-    GIT_TAG        v2.6.1
-)
-FetchContent_MakeAvailable(unity)
-
 # summa_add_test(<target>)
 # Configures a test executable with strict compiler flags and, in Debug builds,
 # AddressSanitizer + UndefinedBehaviorSanitizer.
@@ -23,6 +15,6 @@ function(summa_add_test target)
 endfunction()
 
 add_executable(summa.tests.identity identity.test.c)
-target_link_libraries(summa.tests.identity PRIVATE unity summa::summa)
+target_link_libraries(summa.tests.identity PRIVATE summa::summa)
 add_test(NAME summa.identity COMMAND summa.tests.identity)
 summa_add_test(summa.tests.identity)
