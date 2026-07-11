@@ -24,3 +24,8 @@ add_executable(summa.tests.scheme.string scheme.string.test.c)
 target_link_libraries(summa.tests.scheme.string PRIVATE summa::summa)
 add_test(NAME summa.scheme.string COMMAND summa.tests.scheme.string)
 summa_add_test(summa.tests.scheme.string)
+
+add_executable(summa.tests.scheme scheme.test.c)
+target_link_libraries(summa.tests.scheme PRIVATE summa::summa)
+add_test(NAME summa.scheme COMMAND summa.tests.scheme)
+summa_add_test(summa.tests.scheme)
