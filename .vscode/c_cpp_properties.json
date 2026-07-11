@@ -6,7 +6,11 @@
             "includePath": [
                 "${workspaceFolder}/include"
             ],
-            "defines": [],
+            "defines": [
+                "SUMMA_ARRAY_IMPLEMENTATION",
+                "SUMMA_SCHEME_IMPLEMENTATION",
+                "SUMMA_STRING_IMPLEMENTATION"
+            ],
             "compilerPath": "/usr/bin/gcc",
             "cStandard": "c23",
             "intelliSenseMode": "${default}",
@@ -21,7 +25,11 @@
             "includePath": [
                 "${workspaceFolder}/include"
             ],
-            "defines": [],
+            "defines": [
+                "SUMMA_ARRAY_IMPLEMENTATION",
+                "SUMMA_SCHEME_IMPLEMENTATION",
+                "SUMMA_STRING_IMPLEMENTATION"
+            ],
             "compilerPath": "/usr/bin/gcc",
             "cStandard": "c23",
             "intelliSenseMode": "${default}",

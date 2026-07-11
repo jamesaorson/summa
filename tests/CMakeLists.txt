@@ -7,14 +7,10 @@ function(summa_add_test target)
         -Wextra
         -Wpedantic
         -Werror
+        $<$<C_COMPILER_ID:Clang,AppleClang>:-Wc23-extensions>
         $<$<CONFIG:Debug>:-fsanitize=address,undefined>
     )
     target_link_options(${target} PRIVATE
         $<$<CONFIG:Debug>:-fsanitize=address,undefined>
     )
 endfunction()
-
-add_executable(summa.tests.identity identity.test.c)
-target_link_libraries(summa.tests.identity PRIVATE summa::summa)
-add_test(NAME summa.identity COMMAND summa.tests.identity)
-summa_add_test(summa.tests.identity)

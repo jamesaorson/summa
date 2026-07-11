@@ -13,6 +13,7 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         build_type: [Debug, Release]
     name: ci (${{ matrix.build_type }})

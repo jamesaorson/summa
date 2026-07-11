@@ -14,13 +14,6 @@ docs/            # Reference documents
 <app>/           # Application subdirectories (scheme/, engine/, …)
 ```
 
-## Libraries
-
-| Header              | Description                                          |
-| ------------------- | ---------------------------------------------------- |
-| `summa/identity.h`  | Returns its argument unchanged (`summa_identity(x)`) |
-| `summa/test/test.h` | Single-file unit testing framework (STB-style)       |
-
 ## Usage
 
 Headers are included directly — no linking required.
