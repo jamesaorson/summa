@@ -14,3 +14,8 @@ function(summa_add_test target)
         $<$<CONFIG:Debug>:-fsanitize=address,undefined>
     )
 endfunction()
+
+add_executable(summa.tests.scheme.array scheme.array.test.c)
+target_link_libraries(summa.tests.scheme.array PRIVATE summa::summa)
+add_test(NAME summa.scheme.array COMMAND summa.tests.scheme.array)
+summa_add_test(summa.tests.scheme.array)
