@@ -3,6 +3,7 @@
 
 /* test.h — unit testing framework. See docs/test/DOCS.md. */
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -56,19 +57,54 @@ void summa_test_assert_fail(const summa_test_failure_t* f);
         }                                                                                   \
     } while (0)
 
-#define SUMMA_TEST_ASSERT_EQ_STR(expected, actual)                                                               \
-    do {                                                                                                         \
-        const char *_e = (expected), *_a = (actual);                                                             \
-        if (!_e || !_a || strcmp(_e, _a) != 0) {                                                                 \
-            char _buf[256];                                                                                      \
-            snprintf(_buf, sizeof(_buf), "expected \"%s\", got \"%s\"", _e ? _e : "(null)", _a ? _a : "(null)"); \
-            summa_test_failure_t _f = {__FILE__, __LINE__, #expected " == " #actual, _buf};                      \
-            summa_test_assert_fail(&_f);                                                                         \
-        }                                                                                                        \
+#define SUMMA_TEST_ASSERT_EQ_STR(expected, actual)                                                                  \
+    do {                                                                                                            \
+        const char *_e = (expected), *_a = (actual);                                                                \
+        if (!_e || !_a || strcmp(_e, _a) != 0) {                                                                    \
+            char _buf[256];                                                                                         \
+            snprintf(                                                                                               \
+                _buf, sizeof(_buf), "expected \"%.100s\", got \"%.100s\"", _e ? _e : "(null)", _a ? _a : "(null)"); \
+            summa_test_failure_t _f = {__FILE__, __LINE__, #expected " == " #actual, _buf};                         \
+            summa_test_assert_fail(&_f);                                                                            \
+        }                                                                                                           \
     } while (0)
 
 #define SUMMA_TEST_ASSERT_NULL(ptr) SUMMA_TEST_ASSERT((ptr) == nullptr)
 #define SUMMA_TEST_ASSERT_NOT_NULL(ptr) SUMMA_TEST_ASSERT((ptr) != nullptr)
+
+typedef struct {
+    FILE* file;
+} summa_test_file_t;
+
+summa_test_file_t summa_test_file_open(void);
+void              summa_test_file_close(summa_test_file_t* tf);
+size_t            summa_test_file_read(summa_test_file_t* tf, char* buf, size_t buf_size);
+
+/* Opens a scoped FILE* capture: `var.file` is writable inside the block and is
+ * automatically closed when the block exits. */
+#define SUMMA_TEST_SCOPED_FILE(var)                                                                                 \
+    for (summa_test_file_t var = summa_test_file_open(), *_summa_scope_##var = &var; _summa_scope_##var != nullptr; \
+         summa_test_file_close(&var), _summa_scope_##var                     = nullptr)
+
+/* Asserts everything written to `tf` since it was opened (or last asserted on)
+ * equals `expected`, then drains the capture. */
+#define SUMMA_TEST_ASSERT_FILE_EQ_STR(tf, expected)      \
+    do {                                                 \
+        char _buf[256];                                  \
+        summa_test_file_read(&(tf), _buf, sizeof(_buf)); \
+        SUMMA_TEST_ASSERT_EQ_STR((expected), _buf);      \
+    } while (0)
+
+#define SUMMA_TEST_ASSERT_FILE_EQ_CHAR(tf, expected)     \
+    do {                                                 \
+        char _buf[2];                                    \
+        summa_test_file_read(&(tf), _buf, sizeof(_buf)); \
+        SUMMA_TEST_ASSERT_EQ((expected), _buf[0]);       \
+    } while (0)
+
+void    summa_test_random_seed();
+double  summa_test_random_double_between(double min, double max);
+int64_t summa_test_random_integer_between(int64_t min, int64_t max);
 
 #define SUMMA_TEST_RUN(fn)                   \
     do {                                     \
@@ -86,6 +122,11 @@ void summa_test_assert_fail(const summa_test_failure_t* f);
 #endif /* SUMMA_TEST_H */
 
 #ifdef SUMMA_TEST_IMPLEMENTATION
+#ifndef SUMMA_TEST_IMPLEMENTATION_ONCE
+#define SUMMA_TEST_IMPLEMENTATION_ONCE
+
+#include <stdlib.h>
+#include <time.h>
 
 summa_test_ctx_t summa_test_ctx;
 
@@ -116,4 +157,45 @@ void summa_test_assert_fail(const summa_test_failure_t* f) {
     printf("\n");
 }
 
+summa_test_file_t summa_test_file_open(void) { return (summa_test_file_t){.file = tmpfile()}; }
+
+void summa_test_file_close(summa_test_file_t* tf) {
+    if (tf->file) {
+        fclose(tf->file);
+        tf->file = nullptr;
+    }
+}
+
+size_t summa_test_file_read(summa_test_file_t* tf, char* buf, size_t buf_size) {
+    fflush(tf->file);
+    long pos = ftell(tf->file);
+    rewind(tf->file);
+
+    size_t to_read = (pos > 0 && (size_t)pos < buf_size) ? (size_t)pos : buf_size - 1;
+    size_t n       = fread(buf, 1, to_read, tf->file);
+    buf[n]         = '\0';
+
+    /* Reopen so the next write starts from a clean, empty capture. */
+    fclose(tf->file);
+    tf->file = tmpfile();
+
+    return n;
+}
+
+void summa_test_random_seed() { srand(time(0)); }
+
+double summa_test_random_double_between(double min, double max) {
+    double range = (max - min);
+    double div   = RAND_MAX / range;
+    return min + (rand() / div);
+}
+
+int64_t summa_test_random_integer_between(int64_t min, int64_t max) {
+    uint64_t range = (uint64_t)max - (uint64_t)min;
+    uint64_t bits  = ((uint64_t)rand() << 32) ^ (uint64_t)rand();
+    uint64_t r     = (range == UINT64_MAX) ? bits : bits % (range + 1);
+    return (int64_t)((uint64_t)min + r);
+}
+
+#endif /* SUMMA_TEST_IMPLEMENTATION_ONCE */
 #endif /* SUMMA_TEST_IMPLEMENTATION */

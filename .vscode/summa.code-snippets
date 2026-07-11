@@ -1,0 +1,25 @@
+{
+	"New single file library": {
+		"scope": "c",
+		"prefix": "c-single-file-library",
+		"description": "Generate a new single file library for Summa",
+		"body": [
+			"#ifndef SUMMA_${TM_FILENAME_BASE/(.*)/${1:/upcase}/}_H",
+			"#define SUMMA_${TM_FILENAME_BASE/(.*)/${1:/upcase}/}_H",
+			"",
+			"$BLOCK_COMMENT_START Add your function declarations here $BLOCK_COMMENT_END",
+			"",
+			"#endif",
+			"",
+			"#ifdef SUMMA_${TM_FILENAME_BASE/(.*)/${1:/upcase}/}_IMPLEMENTATION",
+			"#ifndef SUMMA_${TM_FILENAME_BASE/(.*)/${1:/upcase}/}_IMPLEMENTATION_ONCE",
+			"#define SUMMA_${TM_FILENAME_BASE/(.*)/${1:/upcase}/}_IMPLEMENTATION_ONCE",
+			"",
+			"$BLOCK_COMMENT_START Add your function definitions here $BLOCK_COMMENT_END",
+			"",
+			"#endif $BLOCK_COMMENT_START SUMMA_${TM_FILENAME_BASE/(.*)/${1:/upcase}/}_IMPLEMENTATION_ONCE $BLOCK_COMMENT_END",
+			"#endif $BLOCK_COMMENT_START SUMMA_${TM_FILENAME_BASE/(.*)/${1:/upcase}/}_IMPLEMENTATION $BLOCK_COMMENT_END",
+			""
+		]
+	}
+}
