@@ -34,11 +34,11 @@ void test_array_make_empty() {
     SummaArray array = summa_array_make_empty(sizeof(double));
     SUMMA_TEST_ASSERT_NOT_NULL(array);
     SUMMA_TEST_ASSERT_EQ(0u, array->length);
-    SUMMA_TEST_ASSERT_EQ(0u, array->capacity);
+    SUMMA_TEST_ASSERT_EQ(SUMMA_ARRAY_DEFAULT_CAPACITY, array->capacity);
     SUMMA_TEST_ASSERT_EQ(sizeof(double), array->element_size);
     /* Nothing has been allocated yet; value must not be a dangling/garbage
      * pointer, since a later copy into this array will realloc() it. */
-    SUMMA_TEST_ASSERT_NULL(array->value);
+    SUMMA_TEST_ASSERT_NOT_NULL(array->value);
     summa_array_free(array);
 }
 
