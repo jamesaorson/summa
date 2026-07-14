@@ -139,6 +139,116 @@ void test_array_copy_raw_zero_length() {
     summa_array_free(dest);
 }
 
+void test_array_push_onto_empty() {
+    SummaArray array = summa_array_make_empty(sizeof(int));
+    int        val   = 42;
+    summa_array_push(array, &val);
+    SUMMA_TEST_ASSERT_EQ(1u, array->length);
+    SUMMA_TEST_ASSERT(array->capacity >= array->length);
+    int* out = (int*)array->value;
+    SUMMA_TEST_ASSERT_EQ(42, out[0]);
+    summa_array_free(array);
+}
+
+void test_array_push_onto_zero_capacity() {
+    /* summa_array_make with 0 elements yields capacity == 0, a distinct
+     * zero-capacity path from summa_array_make_empty(). */
+    int        vals[1] = {0};
+    SummaArray array   = summa_array_make(vals, 0, sizeof(int));
+    int        val     = 7;
+    summa_array_push(array, &val);
+    SUMMA_TEST_ASSERT_EQ(1u, array->length);
+    SUMMA_TEST_ASSERT(array->capacity >= array->length);
+    int* out = (int*)array->value;
+    SUMMA_TEST_ASSERT_EQ(7, out[0]);
+    summa_array_free(array);
+}
+
+void test_array_push_appends_in_order() {
+    SummaArray array = summa_array_make_empty(sizeof(int));
+    for (int i = 0; i < 5; i++) {
+        summa_array_push(array, &i);
+    }
+    SUMMA_TEST_ASSERT_EQ(5u, array->length);
+    int* out = (int*)array->value;
+    for (int i = 0; i < 5; i++) {
+        SUMMA_TEST_ASSERT_EQ(i, out[i]);
+    }
+    summa_array_free(array);
+}
+
+void test_array_push_grows_past_default_capacity() {
+    SummaArray array       = summa_array_make_empty(sizeof(int));
+    size_t     initial_cap = array->capacity;
+    int        num_to_push = 20;
+    for (int i = 0; i < num_to_push; i++) {
+        summa_array_push(array, &i);
+    }
+    SUMMA_TEST_ASSERT_EQ((size_t)num_to_push, array->length);
+    /* Capacity must have actually grown to fit everything pushed, and stay
+     * in sync with the buffer that was really allocated. */
+    SUMMA_TEST_ASSERT(array->capacity >= array->length);
+    SUMMA_TEST_ASSERT(array->capacity > initial_cap);
+    int* out = (int*)array->value;
+    for (int i = 0; i < num_to_push; i++) {
+        SUMMA_TEST_ASSERT_EQ(i, out[i]);
+    }
+    summa_array_free(array);
+}
+
+void test_array_push_preserves_existing_elements_on_growth() {
+    int        vals[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    SummaArray array   = summa_array_make(vals, 8, sizeof(int));
+    /* length == capacity here, so the next push must trigger a growth
+     * realloc without losing the elements already in the buffer. */
+    SUMMA_TEST_ASSERT_EQ(array->capacity, array->length);
+    int val = 9;
+    summa_array_push(array, &val);
+    SUMMA_TEST_ASSERT_EQ(9u, array->length);
+    SUMMA_TEST_ASSERT(array->capacity >= 9u);
+    int* out = (int*)array->value;
+    for (int i = 0; i < 9; i++) {
+        SUMMA_TEST_ASSERT_EQ(i + 1, out[i]);
+    }
+    summa_array_free(array);
+}
+
+void test_array_push_copies_by_value() {
+    SummaArray array = summa_array_make_empty(sizeof(int));
+    int        val   = 100;
+    summa_array_push(array, &val);
+    /* Mutating the source after push must not affect the stored element;
+     * push copies element_size bytes rather than storing the pointer. */
+    val      = 999;
+    int* out = (int*)array->value;
+    SUMMA_TEST_ASSERT_EQ(100, out[0]);
+    summa_array_free(array);
+}
+
+typedef struct {
+    int a;
+    int b;
+    int c;
+    int d;
+} test_push_wide_t;
+
+void test_array_push_element_wider_than_pointer() {
+    /* element_size (16 bytes) is larger than sizeof(void*), which would
+     * misbehave under pointer-slot-per-element storage. */
+    SummaArray       array  = summa_array_make_empty(sizeof(test_push_wide_t));
+    test_push_wide_t first  = {1, 2, 3, 4};
+    test_push_wide_t second = {5, 6, 7, 8};
+    summa_array_push(array, &first);
+    summa_array_push(array, &second);
+    SUMMA_TEST_ASSERT_EQ(2u, array->length);
+    test_push_wide_t* out = (test_push_wide_t*)array->value;
+    SUMMA_TEST_ASSERT_EQ(1, out[0].a);
+    SUMMA_TEST_ASSERT_EQ(4, out[0].d);
+    SUMMA_TEST_ASSERT_EQ(5, out[1].a);
+    SUMMA_TEST_ASSERT_EQ(8, out[1].d);
+    summa_array_free(array);
+}
+
 int main(void) {
     summa_test_begin("scheme.array");
     SUMMA_TEST_RUN(test_array_make);
@@ -151,5 +261,12 @@ int main(void) {
     SUMMA_TEST_RUN(test_array_copy_into_empty_destination);
     SUMMA_TEST_RUN(test_array_copy_raw_into_empty_destination);
     SUMMA_TEST_RUN(test_array_copy_raw_zero_length);
+    SUMMA_TEST_RUN(test_array_push_onto_empty);
+    SUMMA_TEST_RUN(test_array_push_onto_zero_capacity);
+    SUMMA_TEST_RUN(test_array_push_appends_in_order);
+    SUMMA_TEST_RUN(test_array_push_grows_past_default_capacity);
+    SUMMA_TEST_RUN(test_array_push_preserves_existing_elements_on_growth);
+    SUMMA_TEST_RUN(test_array_push_copies_by_value);
+    SUMMA_TEST_RUN(test_array_push_element_wider_than_pointer);
     return summa_test_end();
 }
