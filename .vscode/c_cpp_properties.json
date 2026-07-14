@@ -8,6 +8,7 @@
             ],
             "defines": [
                 "SUMMA_ARRAY_IMPLEMENTATION",
+                "SUMMA_HASHMAP_IMPLEMENTATION",
                 "SUMMA_SCHEME_IMPLEMENTATION",
                 "SUMMA_STRING_IMPLEMENTATION"
             ],
@@ -27,6 +28,7 @@
             ],
             "defines": [
                 "SUMMA_ARRAY_IMPLEMENTATION",
+                "SUMMA_HASHMAP_IMPLEMENTATION",
                 "SUMMA_SCHEME_IMPLEMENTATION",
                 "SUMMA_STRING_IMPLEMENTATION"
             ],
