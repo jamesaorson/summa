@@ -17,12 +17,15 @@ void       summa_array_clear(SummaArray str);
 bool       summa_array_copy(SummaArray dest, SummaArray src);
 bool       summa_array_copy_raw(SummaArray dest, void* raw, size_t len);
 void       summa_array_free(SummaArray arr);
+void       summa_array_push(SummaArray arr, void* element);
 
 #endif
 
 #ifdef SUMMA_ARRAY_IMPLEMENTATION
 #ifndef SUMMA_ARRAY_IMPLEMENTATION_ONCE
 #define SUMMA_ARRAY_IMPLEMENTATION_ONCE
+
+#define SUMMA_ARRAY_DEFAULT_CAPACITY 8
 
 SummaArray summa_array_make(const void* value, size_t num_elements, size_t element_size) {
     SummaArray array = malloc(sizeof(summa_array_t));
@@ -35,8 +38,8 @@ SummaArray summa_array_make(const void* value, size_t num_elements, size_t eleme
 }
 SummaArray summa_array_make_empty(size_t element_size) {
     SummaArray array    = malloc(sizeof(summa_array_t));
-    array->value        = nullptr;
-    array->capacity     = 0;
+    array->value        = malloc(element_size * SUMMA_ARRAY_DEFAULT_CAPACITY);
+    array->capacity     = SUMMA_ARRAY_DEFAULT_CAPACITY;
     array->length       = 0;
     array->element_size = element_size;
     return array;
@@ -71,6 +74,18 @@ bool summa_array_copy_raw(SummaArray dest, void* raw, size_t len) {
 void summa_array_free(SummaArray arr) {
     free(arr->value);
     free(arr);
+}
+
+void summa_array_push(SummaArray arr, void* element) {
+    if (arr->capacity == 0) {
+        arr->capacity = SUMMA_ARRAY_DEFAULT_CAPACITY;
+        arr->value    = realloc(arr->value, arr->capacity * arr->element_size);
+    } else if (arr->length >= arr->capacity) {
+        arr->capacity *= 2;
+        arr->value = realloc(arr->value, arr->capacity * arr->element_size);
+    }
+    memcpy((char*)arr->value + arr->length * arr->element_size, element, arr->element_size);
+    arr->length++;
 }
 
 #endif /* SUMMA_ARRAY_IMPLEMENTATION_ONCE */
