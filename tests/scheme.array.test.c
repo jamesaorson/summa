@@ -14,7 +14,7 @@ void test_array_make() {
     SUMMA_TEST_ASSERT_EQ(3u, array->length);
     SUMMA_TEST_ASSERT_EQ(3u, array->capacity);
     SUMMA_TEST_ASSERT_EQ(sizeof(int), array->element_size);
-    int* out = (int*)array->value;
+    int* out = (int*)array->elements;
     SUMMA_TEST_ASSERT_EQ(1, out[0]);
     SUMMA_TEST_ASSERT_EQ(2, out[1]);
     SUMMA_TEST_ASSERT_EQ(3, out[2]);
@@ -38,7 +38,7 @@ void test_array_make_empty() {
     SUMMA_TEST_ASSERT_EQ(sizeof(double), array->element_size);
     /* Nothing has been allocated yet; value must not be a dangling/garbage
      * pointer, since a later copy into this array will realloc() it. */
-    SUMMA_TEST_ASSERT_NOT_NULL(array->value);
+    SUMMA_TEST_ASSERT_NOT_NULL(array->elements);
     summa_array_free(array);
 }
 
@@ -74,7 +74,7 @@ void test_array_copy_grows_destination() {
     SUMMA_TEST_ASSERT(ok);
     SUMMA_TEST_ASSERT_EQ(5u, dest->length);
     SUMMA_TEST_ASSERT(dest->capacity >= dest->length);
-    int* out = (int*)dest->value;
+    int* out = (int*)dest->elements;
     for (int i = 0; i < 5; i++) {
         SUMMA_TEST_ASSERT_EQ(big[i], out[i]);
     }
@@ -94,7 +94,7 @@ void test_array_copy_shrinks_destination_length_but_keeps_capacity() {
     /* Destination buffer already had enough room, so no realloc/shrink
      * happens; capacity is left as-is. */
     SUMMA_TEST_ASSERT_EQ(cap, dest->capacity);
-    int* out = (int*)dest->value;
+    int* out = (int*)dest->elements;
     SUMMA_TEST_ASSERT_EQ(7, out[0]);
     summa_array_free(dest);
     summa_array_free(src);
@@ -108,7 +108,7 @@ void test_array_copy_into_empty_destination() {
     SUMMA_TEST_ASSERT(ok);
     SUMMA_TEST_ASSERT_EQ(3u, dest->length);
     SUMMA_TEST_ASSERT(dest->capacity >= 3u);
-    int* out = (int*)dest->value;
+    int* out = (int*)dest->elements;
     SUMMA_TEST_ASSERT_EQ(9, out[0]);
     SUMMA_TEST_ASSERT_EQ(8, out[1]);
     SUMMA_TEST_ASSERT_EQ(7, out[2]);
@@ -123,7 +123,7 @@ void test_array_copy_raw_into_empty_destination() {
     SUMMA_TEST_ASSERT(ok);
     SUMMA_TEST_ASSERT_EQ(4u, dest->length);
     SUMMA_TEST_ASSERT(dest->capacity >= 4u);
-    int* out = (int*)dest->value;
+    int* out = (int*)dest->elements;
     for (int i = 0; i < 4; i++) {
         SUMMA_TEST_ASSERT_EQ(vals[i], out[i]);
     }
@@ -142,10 +142,10 @@ void test_array_copy_raw_zero_length() {
 void test_array_push_onto_empty() {
     SummaArray array = summa_array_make_empty(sizeof(int));
     int        val   = 42;
-    summa_array_push(array, &val);
+    summa_array_push(array, (void**)(&val));
     SUMMA_TEST_ASSERT_EQ(1u, array->length);
     SUMMA_TEST_ASSERT(array->capacity >= array->length);
-    int* out = (int*)array->value;
+    int* out = (int*)array->elements;
     SUMMA_TEST_ASSERT_EQ(42, out[0]);
     summa_array_free(array);
 }
@@ -159,7 +159,7 @@ void test_array_push_onto_zero_capacity() {
     summa_array_push(array, &val);
     SUMMA_TEST_ASSERT_EQ(1u, array->length);
     SUMMA_TEST_ASSERT(array->capacity >= array->length);
-    int* out = (int*)array->value;
+    int* out = (int*)array->elements;
     SUMMA_TEST_ASSERT_EQ(7, out[0]);
     summa_array_free(array);
 }
@@ -170,7 +170,7 @@ void test_array_push_appends_in_order() {
         summa_array_push(array, &i);
     }
     SUMMA_TEST_ASSERT_EQ(5u, array->length);
-    int* out = (int*)array->value;
+    int* out = (int*)array->elements;
     for (int i = 0; i < 5; i++) {
         SUMMA_TEST_ASSERT_EQ(i, out[i]);
     }
@@ -189,7 +189,7 @@ void test_array_push_grows_past_default_capacity() {
      * in sync with the buffer that was really allocated. */
     SUMMA_TEST_ASSERT(array->capacity >= array->length);
     SUMMA_TEST_ASSERT(array->capacity > initial_cap);
-    int* out = (int*)array->value;
+    int* out = (int*)array->elements;
     for (int i = 0; i < num_to_push; i++) {
         SUMMA_TEST_ASSERT_EQ(i, out[i]);
     }
@@ -206,7 +206,7 @@ void test_array_push_preserves_existing_elements_on_growth() {
     summa_array_push(array, &val);
     SUMMA_TEST_ASSERT_EQ(9u, array->length);
     SUMMA_TEST_ASSERT(array->capacity >= 9u);
-    int* out = (int*)array->value;
+    int* out = (int*)array->elements;
     for (int i = 0; i < 9; i++) {
         SUMMA_TEST_ASSERT_EQ(i + 1, out[i]);
     }
@@ -220,7 +220,7 @@ void test_array_push_copies_by_value() {
     /* Mutating the source after push must not affect the stored element;
      * push copies element_size bytes rather than storing the pointer. */
     val      = 999;
-    int* out = (int*)array->value;
+    int* out = (int*)array->elements;
     SUMMA_TEST_ASSERT_EQ(100, out[0]);
     summa_array_free(array);
 }
@@ -241,7 +241,7 @@ void test_array_push_element_wider_than_pointer() {
     summa_array_push(array, &first);
     summa_array_push(array, &second);
     SUMMA_TEST_ASSERT_EQ(2u, array->length);
-    test_push_wide_t* out = (test_push_wide_t*)array->value;
+    test_push_wide_t* out = (test_push_wide_t*)array->elements;
     SUMMA_TEST_ASSERT_EQ(1, out[0].a);
     SUMMA_TEST_ASSERT_EQ(4, out[0].d);
     SUMMA_TEST_ASSERT_EQ(5, out[1].a);

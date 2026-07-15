@@ -36,7 +36,9 @@ SummaString summa_string_make_empty() {
     SummaString str = (SummaString)summa_array_make_empty(sizeof(char));
     return str;
 }
-void summa_string_clear(SummaString str) { summa_array_clear((SummaArray)str); }
+void summa_string_clear(SummaString str) {
+    summa_array_clear((SummaArray)str);
+}
 void summa_string_copy(SummaString dest, SummaString src) {
     /* Copy length+1 bytes (like summa_string_make) so the null terminator that
      * lives just past `length` is preserved, then correct the length back down. */
@@ -48,7 +50,9 @@ void summa_string_copy_cstr(SummaString dest, const char* src) {
     summa_array_copy_raw((SummaArray)dest, (void*)src, len + 1);
     dest->length--;
 }
-void summa_string_free(SummaString str) { summa_array_free((SummaArray)str); }
+void summa_string_free(SummaString str) {
+    summa_array_free((SummaArray)str);
+}
 
 /* Add your function definitions here */
 

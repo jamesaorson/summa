@@ -157,7 +157,9 @@ void summa_test_assert_fail(const summa_test_failure_t* f) {
     printf("\n");
 }
 
-summa_test_file_t summa_test_file_open(void) { return (summa_test_file_t){.file = tmpfile()}; }
+summa_test_file_t summa_test_file_open(void) {
+    return (summa_test_file_t){.file = tmpfile()};
+}
 
 void summa_test_file_close(summa_test_file_t* tf) {
     if (tf->file) {
@@ -182,7 +184,9 @@ size_t summa_test_file_read(summa_test_file_t* tf, char* buf, size_t buf_size) {
     return n;
 }
 
-void summa_test_random_seed() { srand(time(0)); }
+void summa_test_random_seed() {
+    srand(time(0));
+}
 
 double summa_test_random_double_between(double min, double max) {
     double range = (max - min);

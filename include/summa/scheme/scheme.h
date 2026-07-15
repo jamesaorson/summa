@@ -80,18 +80,7 @@ typedef struct {
 
 #define summa_make_scheme_integer(val) ((SummaSchemeValue){.type = SchemeInteger, .value.integer = {.value = (val)}})
 
-typedef struct {
-    SummaSchemeValue* value;
-    size_t            length;
-    size_t            capacity;
-} summa_list_t;
-typedef summa_list_t* SummaList;
-
-SummaList summa_make_list(SummaSchemeValue* value, size_t num_elements);
-SummaList summa_make_list_empty();
-void      summa_list_clear(SummaList str);
-void      summa_list_copy(SummaList dest, SummaList src);
-void      summa_list_free(SummaList list);
+SUMMA_ARRAY_GENERATE_TYPE_DEF(SummaList, list, SummaSchemeValue)
 
 typedef struct {
     SummaList value;
@@ -160,17 +149,7 @@ SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out);
 
 #ifdef SUMMA_SCHEME_IMPLEMENTATION
 
-SummaList summa_make_list(SummaSchemeValue* value, size_t num_elements) {
-    SummaList list = (SummaList)summa_array_make(value, num_elements, sizeof(SummaSchemeValue));
-    return list;
-}
-SummaList summa_make_list_empty() {
-    SummaList list = (SummaList)summa_array_make_empty(sizeof(SummaSchemeValue));
-    return list;
-}
-void summa_list_clear(SummaList list) { summa_array_clear((SummaArray)list); }
-void summa_list_copy(SummaList dest, SummaList src) { summa_array_copy((SummaArray)dest, (SummaArray)src); }
-void summa_list_free(SummaList list) { summa_array_free((SummaArray)list); }
+SUMMA_ARRAY_GENERATE_TYPE_IMPL(SummaList, list, SummaSchemeValue)
 
 SummaSchemeError summa_scheme_read([[maybe_unused]] const char*            inputText,
                                    [[maybe_unused]] SummaSchemeExpression* out) {

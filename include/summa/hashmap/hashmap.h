@@ -70,11 +70,19 @@ SummaHashIndices summa_hash_indices_make_empty() {
     SummaHashIndices indices = (SummaHashIndices)summa_array_make_empty(sizeof(SummaHashCode));
     return indices;
 }
-void summa_hash_indices_clear(SummaHashIndices indices) { summa_array_clear((SummaHashIndices)indices); }
+
+void summa_hash_indices_clear(SummaHashIndices indices) {
+    summa_array_clear((SummaHashIndices)indices);
+}
+
 void summa_hash_indices_copy(SummaHashIndices dest, SummaHashIndices src) {
     summa_array_copy((SummaHashIndices)dest, (SummaHashIndices)src);
 }
-void summa_hash_indices_free(SummaHashIndices indices) { summa_array_free((SummaHashIndices)indices); }
+
+void summa_hash_indices_free(SummaHashIndices indices) {
+    summa_array_free((SummaHashIndices)indices);
+}
+
 bool summa_hash_indices_contains_hash_code(SummaHashIndices indices, SummaHashCode code) {
     for (int i = 0; i < indices->length; i++) {
         if (indices->value[i] == code) {
@@ -95,11 +103,15 @@ SummaHashValues summa_hash_values_make_empty() {
     SummaHashValues values = (SummaHashValues)summa_array_make_empty(sizeof(SummaHashCode));
     return values;
 }
-void summa_hash_values_clear(SummaHashValues values) { summa_array_clear((SummaHashValues)values); }
+void summa_hash_values_clear(SummaHashValues values) {
+    summa_array_clear((SummaHashValues)values);
+}
 void summa_hash_values_copy(SummaHashValues dest, SummaHashValues src) {
     summa_array_copy((SummaHashValues)dest, (SummaHashValues)src);
 }
-void summa_hash_values_free(SummaHashValues values) { summa_array_free((SummaHashValues)values); }
+void summa_hash_values_free(SummaHashValues values) {
+    summa_array_free((SummaHashValues)values);
+}
 
 struct SummaHashMap {
     SummaHashIndices indices;

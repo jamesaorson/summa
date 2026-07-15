@@ -88,7 +88,7 @@ void test_scheme_print_integer() {
 }
 
 void test_scheme_print_list() {
-    SummaList        nested    = summa_make_list_empty();
+    SummaList        nested    = summa_list_make_empty();
     SummaSchemeValue values[5] = {
         summa_make_scheme_boolean(true),
         summa_make_scheme_integer(420),
@@ -97,7 +97,7 @@ void test_scheme_print_list() {
         summa_make_scheme_boolean(false),
     };
     SUMMA_TEST_SCOPED_FILE(f) {
-        SummaList        list  = summa_make_list(values, sizeof(values) / sizeof(values[0]));
+        SummaList        list  = summa_list_make(values, sizeof(values) / sizeof(values[0]));
         SummaSchemeValue value = summa_make_scheme_list(list);
         SummaSchemeError error = summa_scheme_print(value, f.file);
         SUMMA_TEST_ASSERT(!error.had);
