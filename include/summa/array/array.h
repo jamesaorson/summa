@@ -89,7 +89,7 @@ void summa_array_push(SummaArray arr, void* element) {
         arr->capacity *= 2;
         arr->elements = realloc(arr->elements, arr->capacity * arr->element_size);
     }
-    memcpy((char*)arr->elements + arr->length * arr->element_size, element, arr->element_size);
+    memcpy((char*)arr->elements + (arr->length * arr->element_size), element, arr->element_size);
     arr->length++;
 }
 
