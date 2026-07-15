@@ -29,3 +29,8 @@ add_executable(summa.tests.scheme scheme.test.c)
 target_link_libraries(summa.tests.scheme PRIVATE summa::summa)
 add_test(NAME summa.scheme COMMAND summa.tests.scheme)
 summa_add_test(summa.tests.scheme)
+
+add_executable(summa.tests.hashmap hashmap.test.c)
+target_link_libraries(summa.tests.hashmap PRIVATE summa::summa)
+add_test(NAME summa.hashmap COMMAND summa.tests.hashmap)
+summa_add_test(summa.tests.hashmap)
