@@ -21,6 +21,8 @@ void       summa_array_free(SummaArray arr);
 void       summa_array_push(SummaArray arr, void* element);
 bool       summa_array_contains(SummaArray arr, void* element);
 void       summa_array_remove_at(SummaArray arr, size_t index);
+bool       summa_array_index_of(SummaArray arr, void* element, size_t* out_index);
+void       summa_array_set_at(SummaArray arr, size_t index, void* element);
 
 #endif
 
@@ -116,6 +118,25 @@ void summa_array_remove_at(SummaArray arr, size_t index) {
     arr->length--;
 }
 
+bool summa_array_index_of(SummaArray arr, void* element, size_t* out_index) {
+    for (size_t i = 0; i < arr->length; i++) {
+        if (memcmp((char*)arr->elements + (i * arr->element_size), element, arr->element_size) == 0) {
+            if (out_index) {
+                *out_index = i;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+void summa_array_set_at(SummaArray arr, size_t index, void* element) {
+    if (index >= arr->length) {
+        return;
+    }
+    memcpy((char*)arr->elements + (index * arr->element_size), element, arr->element_size);
+}
+
 #include <summa/macros/macros.h>
 
 #define SUMMA_ARRAY_GENERATE_TYPE_DEF(NewType, NewTypeNameForFunctions, ValueType) \
@@ -150,6 +171,14 @@ void summa_array_remove_at(SummaArray arr, size_t index) {
     }                                                                                                                \
     void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _remove_at)(NewType arr, size_t index) {               \
         summa_array_remove_at((SummaArray)arr, index);                                                               \
+    }                                                                                                                \
+    bool SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _index_of)(                                            \
+        NewType arr, ValueType * element, size_t* out_index) {                                                       \
+        return summa_array_index_of((SummaArray)arr, (void*)element, out_index);                                     \
+    }                                                                                                                \
+    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _set_at)(                                              \
+        NewType arr, size_t index, ValueType* element) {                                                             \
+        summa_array_set_at((SummaArray)arr, index, (void*)element);                                                  \
     }
 
 #define SUMMA_ARRAY_GENERATE_TYPE(NewType, NewTypeNameForFunctions, ValueType) \

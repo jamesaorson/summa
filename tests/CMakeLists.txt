@@ -34,3 +34,8 @@ add_executable(summa.tests.hash_set hash_set.test.c)
 target_link_libraries(summa.tests.hash_set PRIVATE summa::summa)
 add_test(NAME summa.hash_set COMMAND summa.tests.hash_set)
 summa_add_test(summa.tests.hash_set)
+
+add_executable(summa.tests.hash_map hash_map.test.c)
+target_link_libraries(summa.tests.hash_map PRIVATE summa::summa)
+add_test(NAME summa.hash_map COMMAND summa.tests.hash_map)
+summa_add_test(summa.tests.hash_map)
