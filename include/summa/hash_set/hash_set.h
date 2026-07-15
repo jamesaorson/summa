@@ -25,6 +25,9 @@ SUMMA_ARRAY_GENERATE_TYPE_DEF(SummaHashValues, hash_values, void*)
 
 SummaHashSet summa_hash_set_make(void** values, size_t num_elements, size_t element_size);
 SummaHashSet summa_hash_set_make_empty(size_t element_size);
+bool         summa_hash_set_contains(SummaHashSet set, void* element);
+bool         summa_hash_set_add(SummaHashSet set, void* element);
+bool         summa_hash_set_remove(SummaHashSet set, void* element);
 void         summa_hash_set_clear(SummaHashSet set);
 void         summa_hash_set_copy(SummaHashSet dest, SummaHashSet src);
 void         summa_hash_set_free(SummaHashSet set);
@@ -33,9 +36,9 @@ void         summa_hash_set_free(SummaHashSet set);
 
 #endif
 
-#ifdef SUMMA_HASHMAP_IMPLEMENTATION
-#ifndef SUMMA_HASHMAP_IMPLEMENTATION_ONCE
-#define SUMMA_HASHMAP_IMPLEMENTATION_ONCE
+#ifdef SUMMA_HASH_SET_IMPLEMENTATION
+#ifndef SUMMA_HASH_SET_IMPLEMENTATION_ONCE
+#define SUMMA_HASH_SET_IMPLEMENTATION_ONCE
 
 #include <stdlib.h>
 #include <string.h>
@@ -85,11 +88,7 @@ SummaHashSet summa_hash_set_make(void** elements, size_t num_elements, size_t el
     set->values = summa_hash_values_make_empty();
 
     for (size_t i = 0; i < num_elements; i++) {
-        SummaHashCode code = summa_hash(elements[i], element_size);
-        if (!summa_hash_keys_contains(set->keys, &code)) {
-            summa_hash_keys_push(set->keys, &code);
-            summa_hash_values_push(set->values, &elements[i]);
-        }
+        summa_hash_set_add(set, elements[i]);
     }
 
     return set;
@@ -101,6 +100,33 @@ SummaHashSet summa_hash_set_make_empty(size_t element_size) {
     set->keys         = summa_hash_keys_make_empty();
     set->values       = summa_hash_values_make_empty();
     return set;
+}
+
+bool summa_hash_set_contains(SummaHashSet set, void* element) {
+    SummaHashCode code = summa_hash(element, set->element_size);
+    return summa_hash_keys_contains(set->keys, &code);
+}
+
+bool summa_hash_set_add(SummaHashSet set, void* element) {
+    SummaHashCode code = summa_hash(element, set->element_size);
+    if (summa_hash_keys_contains(set->keys, &code)) {
+        return false;
+    }
+    summa_hash_keys_push(set->keys, &code);
+    summa_hash_values_push(set->values, &element);
+    return true;
+}
+
+bool summa_hash_set_remove(SummaHashSet set, void* element) {
+    SummaHashCode code = summa_hash(element, set->element_size);
+    for (size_t i = 0; i < set->keys->length; i++) {
+        if (set->keys->value[i] == code) {
+            summa_hash_keys_remove_at(set->keys, i);
+            summa_hash_values_remove_at(set->values, i);
+            return true;
+        }
+    }
+    return false;
 }
 
 void summa_hash_set_clear(SummaHashSet set) {

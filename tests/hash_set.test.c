@@ -1,7 +1,7 @@
 #define SUMMA_TEST_IMPLEMENTATION
 #include <summa/test/test.h>
 
-#define SUMMA_HASHMAP_IMPLEMENTATION
+#define SUMMA_HASH_SET_IMPLEMENTATION
 #include <summa/hash_set/hash_set.h>
 
 void test_hash_is_deterministic() {
@@ -61,6 +61,68 @@ void test_hash_set_clear() {
     summa_hash_set_free(set);
 }
 
+void test_hash_set_contains_found() {
+    int          a         = 1;
+    int          b         = 2;
+    void*        values[2] = {&a, &b};
+    SummaHashSet set       = summa_hash_set_make(values, 2, sizeof(int));
+    SUMMA_TEST_ASSERT(summa_hash_set_contains(set, &a));
+    SUMMA_TEST_ASSERT(summa_hash_set_contains(set, &b));
+    summa_hash_set_free(set);
+}
+
+void test_hash_set_contains_not_found() {
+    int          a         = 1;
+    int          absent    = 99;
+    void*        values[1] = {&a};
+    SummaHashSet set       = summa_hash_set_make(values, 1, sizeof(int));
+    SUMMA_TEST_ASSERT(!summa_hash_set_contains(set, &absent));
+    summa_hash_set_free(set);
+}
+
+void test_hash_set_add_new_element() {
+    SummaHashSet set = summa_hash_set_make_empty(sizeof(int));
+    int          a   = 5;
+    SUMMA_TEST_ASSERT(summa_hash_set_add(set, &a));
+    SUMMA_TEST_ASSERT_EQ(1u, set->keys->length);
+    SUMMA_TEST_ASSERT_EQ(1u, set->values->length);
+    SUMMA_TEST_ASSERT(summa_hash_set_contains(set, &a));
+    summa_hash_set_free(set);
+}
+
+void test_hash_set_add_duplicate_is_noop() {
+    SummaHashSet set = summa_hash_set_make_empty(sizeof(int));
+    int          a   = 5;
+    SUMMA_TEST_ASSERT(summa_hash_set_add(set, &a));
+    SUMMA_TEST_ASSERT(!summa_hash_set_add(set, &a));
+    SUMMA_TEST_ASSERT_EQ(1u, set->keys->length);
+    SUMMA_TEST_ASSERT_EQ(1u, set->values->length);
+    summa_hash_set_free(set);
+}
+
+void test_hash_set_remove_existing_element() {
+    int          a         = 1;
+    int          b         = 2;
+    void*        values[2] = {&a, &b};
+    SummaHashSet set       = summa_hash_set_make(values, 2, sizeof(int));
+    SUMMA_TEST_ASSERT(summa_hash_set_remove(set, &a));
+    SUMMA_TEST_ASSERT_EQ(1u, set->keys->length);
+    SUMMA_TEST_ASSERT_EQ(1u, set->values->length);
+    SUMMA_TEST_ASSERT(!summa_hash_set_contains(set, &a));
+    SUMMA_TEST_ASSERT(summa_hash_set_contains(set, &b));
+    summa_hash_set_free(set);
+}
+
+void test_hash_set_remove_missing_element_is_noop() {
+    int          a         = 1;
+    int          absent    = 99;
+    void*        values[1] = {&a};
+    SummaHashSet set       = summa_hash_set_make(values, 1, sizeof(int));
+    SUMMA_TEST_ASSERT(!summa_hash_set_remove(set, &absent));
+    SUMMA_TEST_ASSERT_EQ(1u, set->keys->length);
+    summa_hash_set_free(set);
+}
+
 void test_hash_set_copy() {
     int          a         = 1;
     int          b         = 2;
@@ -81,6 +143,12 @@ int main(void) {
     SUMMA_TEST_RUN(test_hash_set_make_empty);
     SUMMA_TEST_RUN(test_hash_set_make_inserts_values);
     SUMMA_TEST_RUN(test_hash_set_make_dedupes_equal_values);
+    SUMMA_TEST_RUN(test_hash_set_contains_found);
+    SUMMA_TEST_RUN(test_hash_set_contains_not_found);
+    SUMMA_TEST_RUN(test_hash_set_add_new_element);
+    SUMMA_TEST_RUN(test_hash_set_add_duplicate_is_noop);
+    SUMMA_TEST_RUN(test_hash_set_remove_existing_element);
+    SUMMA_TEST_RUN(test_hash_set_remove_missing_element_is_noop);
     SUMMA_TEST_RUN(test_hash_set_clear);
     SUMMA_TEST_RUN(test_hash_set_copy);
     return summa_test_end();

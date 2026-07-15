@@ -20,6 +20,7 @@ bool       summa_array_copy_raw(SummaArray dest, void* raw, size_t len);
 void       summa_array_free(SummaArray arr);
 void       summa_array_push(SummaArray arr, void* element);
 bool       summa_array_contains(SummaArray arr, void* element);
+void       summa_array_remove_at(SummaArray arr, size_t index);
 
 #endif
 
@@ -102,6 +103,19 @@ bool summa_array_contains(SummaArray arr, void* element) {
     return false;
 }
 
+void summa_array_remove_at(SummaArray arr, size_t index) {
+    if (index >= arr->length) {
+        return;
+    }
+    size_t tail_count = arr->length - index - 1;
+    if (tail_count > 0) {
+        memmove((char*)arr->elements + (index * arr->element_size),
+                (char*)arr->elements + ((index + 1) * arr->element_size),
+                tail_count * arr->element_size);
+    }
+    arr->length--;
+}
+
 #include <summa/macros/macros.h>
 
 #define SUMMA_ARRAY_GENERATE_TYPE_DEF(NewType, NewTypeNameForFunctions, ValueType) \
@@ -133,6 +147,9 @@ bool summa_array_contains(SummaArray arr, void* element) {
     }                                                                                                                \
     bool SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _contains)(NewType arr, ValueType * element) {         \
         return summa_array_contains((SummaArray)arr, (void*)element);                                                \
+    }                                                                                                                \
+    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _remove_at)(NewType arr, size_t index) {               \
+        summa_array_remove_at((SummaArray)arr, index);                                                               \
     }
 
 #define SUMMA_ARRAY_GENERATE_TYPE(NewType, NewTypeNameForFunctions, ValueType) \
