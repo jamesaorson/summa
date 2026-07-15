@@ -59,59 +59,8 @@ SummaHashCode summa_hash(void* value, size_t size) {
 #define SUMMA_ARRAY_IMPLEMENTATION
 #include <summa/array/array.h>
 
-typedef struct {
-    SummaHashCode* value;
-    size_t         length;
-    size_t         capacity;
-} summa_hash_indices_t;
-typedef summa_hash_indices_t* SummaHashIndices;
-
-SummaHashIndices summa_hash_indices_make_empty() {
-    SummaHashIndices indices = (SummaHashIndices)summa_array_make_empty(sizeof(SummaHashCode));
-    return indices;
-}
-
-void summa_hash_indices_clear(SummaHashIndices indices) {
-    summa_array_clear((SummaHashIndices)indices);
-}
-
-void summa_hash_indices_copy(SummaHashIndices dest, SummaHashIndices src) {
-    summa_array_copy((SummaHashIndices)dest, (SummaHashIndices)src);
-}
-
-void summa_hash_indices_free(SummaHashIndices indices) {
-    summa_array_free((SummaHashIndices)indices);
-}
-
-bool summa_hash_indices_contains_hash_code(SummaHashIndices indices, SummaHashCode code) {
-    for (int i = 0; i < indices->length; i++) {
-        if (indices->value[i] == code) {
-            return true;
-        }
-    }
-    return false;
-}
-
-typedef struct {
-    void*  value;
-    size_t length;
-    size_t capacity;
-} _summa_hash_values_t;
-typedef _summa_hash_values_t* SummaHashValues;
-
-SummaHashValues summa_hash_values_make_empty() {
-    SummaHashValues values = (SummaHashValues)summa_array_make_empty(sizeof(SummaHashCode));
-    return values;
-}
-void summa_hash_values_clear(SummaHashValues values) {
-    summa_array_clear((SummaHashValues)values);
-}
-void summa_hash_values_copy(SummaHashValues dest, SummaHashValues src) {
-    summa_array_copy((SummaHashValues)dest, (SummaHashValues)src);
-}
-void summa_hash_values_free(SummaHashValues values) {
-    summa_array_free((SummaHashValues)values);
-}
+SUMMA_ARRAY_GENERATE_TYPE(SummaHashIndices, hash_indices, SummaHashCode)
+SUMMA_ARRAY_GENERATE_TYPE(SummaHashValues, hash_values, void*)
 
 struct SummaHashMap {
     SummaHashIndices indices;

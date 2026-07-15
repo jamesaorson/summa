@@ -1,6 +1,7 @@
 #ifndef SUMMA_ARRAY_H
 #define SUMMA_ARRAY_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 typedef struct {
@@ -18,6 +19,7 @@ bool       summa_array_copy(SummaArray dest, SummaArray src);
 bool       summa_array_copy_raw(SummaArray dest, void* raw, size_t len);
 void       summa_array_free(SummaArray arr);
 void       summa_array_push(SummaArray arr, void* element);
+bool       summa_array_contains(SummaArray arr, void* element);
 
 #endif
 
@@ -91,6 +93,15 @@ void summa_array_push(SummaArray arr, void* element) {
     arr->length++;
 }
 
+bool summa_array_contains(SummaArray arr, void* element) {
+    for (size_t i = 0; i < arr->length; i++) {
+        if (memcmp((char*)arr->elements + (i * arr->element_size), element, arr->element_size) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 #include <summa/macros/macros.h>
 
 #define SUMMA_ARRAY_GENERATE_TYPE_DEF(NewType, NewTypeNameForFunctions, ValueType) \
@@ -101,25 +112,31 @@ void summa_array_push(SummaArray arr, void* element) {
     } SUMMA_TOKEN_CONCAT2(NewType, _t);                                            \
     typedef SUMMA_TOKEN_CONCAT2(NewType, _t) * NewType;
 
-#define SUMMA_ARRAY_GENERATE_TYPE_IMPL(NewType, NewTypeNameForFunctions, ValueType)                                \
-    NewType SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _make)(ValueType * values, size_t num_elements) { \
-        return (NewType)summa_array_make(values, num_elements, sizeof(ValueType));                                 \
-    }                                                                                                              \
-    NewType SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _make_empty)() {                                  \
-        return (NewType)summa_array_make_empty(sizeof(ValueType));                                                 \
-    }                                                                                                              \
-    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _clear)(NewType arr) {                               \
-        summa_array_clear((SummaArray)arr);                                                                        \
-    }                                                                                                              \
-    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _copy)(NewType dest, NewType src) {                  \
-        summa_array_copy((SummaArray)dest, (SummaArray)src);                                                       \
-    }                                                                                                              \
-    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _free)(NewType arr) {                                \
-        summa_array_free((SummaArray)arr);                                                                         \
-    }                                                                                                              \
-    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _push)(NewType arr, ValueType * value) {             \
-        summa_array_push((SummaArray)arr, (void*)value);                                                           \
+#define SUMMA_ARRAY_GENERATE_TYPE_IMPL(NewType, NewTypeNameForFunctions, ValueType)                                  \
+    NewType SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _make)(ValueType * elements, size_t num_elements) { \
+        return (NewType)summa_array_make(elements, num_elements, sizeof(ValueType));                                 \
+    }                                                                                                                \
+    NewType SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _make_empty)() {                                    \
+        return (NewType)summa_array_make_empty(sizeof(ValueType));                                                   \
+    }                                                                                                                \
+    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _clear)(NewType arr) {                                 \
+        summa_array_clear((SummaArray)arr);                                                                          \
+    }                                                                                                                \
+    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _copy)(NewType dest, NewType src) {                    \
+        summa_array_copy((SummaArray)dest, (SummaArray)src);                                                         \
+    }                                                                                                                \
+    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _free)(NewType arr) {                                  \
+        summa_array_free((SummaArray)arr);                                                                           \
+    }                                                                                                                \
+    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _push)(NewType arr, ValueType * element) {             \
+        summa_array_push((SummaArray)arr, (void*)element);                                                           \
+    }                                                                                                                \
+    bool SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _contains)(NewType arr, ValueType * element) {         \
+        return summa_array_contains((SummaArray)arr, (void*)element);                                                \
     }
 
+#define SUMMA_ARRAY_GENERATE_TYPE(NewType, NewTypeNameForFunctions, ValueType) \
+    SUMMA_ARRAY_GENERATE_TYPE_DEF(NewType, NewTypeNameForFunctions, ValueType) \
+    SUMMA_ARRAY_GENERATE_TYPE_IMPL(NewType, NewTypeNameForFunctions, ValueType)
 #endif /* SUMMA_ARRAY_IMPLEMENTATION_ONCE */
 #endif /* SUMMA_ARRAY_IMPLEMENTATION */

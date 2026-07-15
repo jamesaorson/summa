@@ -34,10 +34,10 @@ void test_string_make_empty() {
     SummaString str = summa_string_make_empty();
     SUMMA_TEST_ASSERT_NOT_NULL(str);
     SUMMA_TEST_ASSERT_EQ(0u, str->length);
-    SUMMA_TEST_ASSERT_EQ(0u, str->capacity);
-    /* Nothing has been allocated yet; value must not be a dangling/garbage
-     * pointer, since copying into this string will later realloc() it. */
-    SUMMA_TEST_ASSERT_NULL(str->value);
+    SUMMA_TEST_ASSERT_EQ(SUMMA_ARRAY_DEFAULT_CAPACITY, str->capacity);
+    /* summa_array_make_empty eagerly allocates the default capacity, so
+     * value must not be a dangling/garbage pointer. */
+    SUMMA_TEST_ASSERT_NOT_NULL(str->value);
     summa_string_free(str);
 }
 

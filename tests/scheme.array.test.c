@@ -249,6 +249,67 @@ void test_array_push_element_wider_than_pointer() {
     summa_array_free(array);
 }
 
+void test_array_contains_found() {
+    int        vals[4] = {1, 2, 3, 4};
+    SummaArray array   = summa_array_make(vals, 4, sizeof(int));
+    int        needle  = 3;
+    SUMMA_TEST_ASSERT(summa_array_contains(array, &needle));
+    summa_array_free(array);
+}
+
+void test_array_contains_not_found() {
+    int        vals[4] = {1, 2, 3, 4};
+    SummaArray array   = summa_array_make(vals, 4, sizeof(int));
+    int        needle  = 5;
+    SUMMA_TEST_ASSERT(!summa_array_contains(array, &needle));
+    summa_array_free(array);
+}
+
+void test_array_contains_empty_array() {
+    SummaArray array  = summa_array_make_empty(sizeof(int));
+    int        needle = 1;
+    SUMMA_TEST_ASSERT(!summa_array_contains(array, &needle));
+    summa_array_free(array);
+}
+
+void test_array_contains_checks_first_and_last_elements() {
+    int        vals[3] = {10, 20, 30};
+    SummaArray array   = summa_array_make(vals, 3, sizeof(int));
+    int        first   = 10;
+    int        last    = 30;
+    SUMMA_TEST_ASSERT(summa_array_contains(array, &first));
+    SUMMA_TEST_ASSERT(summa_array_contains(array, &last));
+    summa_array_free(array);
+}
+
+void test_array_contains_ignores_elements_past_length() {
+    /* length == 1 but capacity holds a second slot with a value that was
+     * never actually pushed/copied in; contains must only scan [0, length). */
+    SummaArray array  = summa_array_make_empty(sizeof(int));
+    int        pushed = 1;
+    int        never  = 2;
+    summa_array_push(array, &pushed);
+    summa_array_push(array, &never);
+    summa_array_clear(array);
+    summa_array_push(array, &pushed);
+    SUMMA_TEST_ASSERT_EQ(1u, array->length);
+    SUMMA_TEST_ASSERT(!summa_array_contains(array, &never));
+    summa_array_free(array);
+}
+
+void test_array_contains_element_wider_than_pointer() {
+    SummaArray       array   = summa_array_make_empty(sizeof(test_push_wide_t));
+    test_push_wide_t first   = {1, 2, 3, 4};
+    test_push_wide_t second  = {5, 6, 7, 8};
+    test_push_wide_t missing = {9, 9, 9, 9};
+    summa_array_push(array, &first);
+    summa_array_push(array, &second);
+    SUMMA_TEST_ASSERT(summa_array_contains(array, &first));
+    SUMMA_TEST_ASSERT(summa_array_contains(array, &second));
+    SUMMA_TEST_ASSERT(!summa_array_contains(array, &missing));
+    summa_array_free(array);
+}
+
 int main(void) {
     summa_test_begin("scheme.array");
     SUMMA_TEST_RUN(test_array_make);
@@ -268,5 +329,11 @@ int main(void) {
     SUMMA_TEST_RUN(test_array_push_preserves_existing_elements_on_growth);
     SUMMA_TEST_RUN(test_array_push_copies_by_value);
     SUMMA_TEST_RUN(test_array_push_element_wider_than_pointer);
+    SUMMA_TEST_RUN(test_array_contains_found);
+    SUMMA_TEST_RUN(test_array_contains_not_found);
+    SUMMA_TEST_RUN(test_array_contains_empty_array);
+    SUMMA_TEST_RUN(test_array_contains_checks_first_and_last_elements);
+    SUMMA_TEST_RUN(test_array_contains_ignores_elements_past_length);
+    SUMMA_TEST_RUN(test_array_contains_element_wider_than_pointer);
     return summa_test_end();
 }

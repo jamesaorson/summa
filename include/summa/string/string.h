@@ -1,14 +1,10 @@
 #ifndef SUMMA_STRING_H
 #define SUMMA_STRING_H
 
-#include <stddef.h>
+#define SUMMA_ARRAY_IMPLEMENTATION
+#include <summa/array/array.h>
 
-typedef struct {
-    char*  value;
-    size_t length;
-    size_t capacity;
-} summa_string_t;
-typedef summa_string_t* SummaString;
+SUMMA_ARRAY_GENERATE_TYPE_DEF(SummaString, string, char)
 
 SummaString summa_string_make(const char* value);
 SummaString summa_string_make_empty();
@@ -24,8 +20,6 @@ void        summa_string_free(SummaString str);
 #define SUMMA_STRING_IMPLEMENTATION_ONCE
 
 #include <string.h>
-#define SUMMA_ARRAY_IMPLEMENTATION
-#include <summa/array/array.h>
 
 SummaString summa_string_make(const char* value) {
     SummaString str = (SummaString)summa_array_make(value, strlen(value) + 1, sizeof(char));
@@ -33,8 +27,7 @@ SummaString summa_string_make(const char* value) {
     return str;
 }
 SummaString summa_string_make_empty() {
-    SummaString str = (SummaString)summa_array_make_empty(sizeof(char));
-    return str;
+    return (SummaString)summa_array_make_empty(sizeof(char));
 }
 void summa_string_clear(SummaString str) {
     summa_array_clear((SummaArray)str);
