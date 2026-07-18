@@ -359,7 +359,7 @@ SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSche
         summa_list_copy(dest->value.vector.value, src->value.vector.value);
     } break;
     default: {
-        summa_make_error("summa_scheme_value_copy - Invalid scheme type provided");
+        return summa_make_error("summa_scheme_value_copy - Invalid scheme type provided");
     } break;
     }
 
