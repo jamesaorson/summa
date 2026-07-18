@@ -12,6 +12,11 @@ endif
 
 UNAME_S := $(shell uname -s)
 
+ifeq ($(UNAME_S),Darwin)
+    CC ?= gcc-13
+    export CC
+endif
+
 CMAKE_BUILD_TYPE ?= Debug
 CMAKE_PRESET := $(shell echo $(CMAKE_BUILD_TYPE) | tr '[:upper:]' '[:lower:]')
 
