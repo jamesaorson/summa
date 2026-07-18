@@ -11,6 +11,18 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+static void free_global_env(SummaSchemeEnvironment env) {
+    for (size_t i = 0; i < env->bindings->length; i++) {
+        SummaSchemeBinding binding = env->bindings->value[i];
+        if (binding.value.type == SummaSchemeProcedureType) {
+            summa_symbol_list_free(binding.value.value.procedure.bindings);
+            summa_list_free(binding.value.value.procedure.body);
+        }
+        summa_string_free(binding.name);
+    }
+    summa_binding_list_free(env->bindings);
+}
+
 void test_scheme_evaluate_boolean() {
     SummaSchemeEnvironment env;
     summa_scheme_environment_make_global(env);
@@ -19,6 +31,7 @@ void test_scheme_evaluate_boolean() {
     SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
     SUMMA_TEST_ASSERT(!error.had);
     SUMMA_TEST_ASSERT_EQ(out.value.boolean.value, true);
+    free_global_env(env);
 }
 
 void test_scheme_evaluate_character() {
@@ -32,6 +45,7 @@ void test_scheme_evaluate_character() {
         error = summa_scheme_evaluate(env, in, &out);
         SUMMA_TEST_ASSERT(!error.had);
         SUMMA_TEST_ASSERT_EQ(out.value.character.value, (char)c);
+        free_global_env(env);
     }
 }
 
@@ -53,6 +67,7 @@ void test_scheme_evaluate_floating() {
         SUMMA_TEST_ASSERT(!error.had);
         SUMMA_TEST_ASSERT_EQ(out.value.floating.value, value);
         SUMMA_TEST_ASSERT_NEQ(out.value.floating.value, value = 0.0001);
+        free_global_env(env);
     }
 }
 
@@ -72,6 +87,7 @@ void test_scheme_evaluate_integer() {
         SUMMA_TEST_ASSERT(!error.had);
         SUMMA_TEST_ASSERT_EQ(out.value.integer.value, value);
         SUMMA_TEST_ASSERT_NEQ(out.value.integer.value, value + 1);
+        free_global_env(env);
     }
 }
 
@@ -95,6 +111,11 @@ void test_scheme_evaluate_list() {
 
     SUMMA_TEST_ASSERT(!error.had);
     SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
+
+    summa_list_free(out.value.list.value);
+    summa_list_free(list);
+    summa_list_free(nested);
+    free_global_env(env);
 }
 
 void test_scheme_evaluate_procedure() {
@@ -111,6 +132,13 @@ void test_scheme_evaluate_procedure() {
 
     // TODO: Make this not fail
     SUMMA_TEST_ASSERT(error.had);
+
+    for (size_t i = 0; i < body_proc_bindings->length; i++) {
+        summa_string_free(body_proc_bindings->value[i].value);
+    }
+    summa_symbol_list_free(body_proc_bindings);
+    summa_string_free(body_proc_name);
+    free_global_env(env);
 }
 
 #define HELLO "hello"
@@ -126,6 +154,10 @@ void test_scheme_evaluate_string() {
 
     SUMMA_TEST_ASSERT(!error.had);
     SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
+
+    summa_string_free(in.value.string.value);
+    summa_string_free(out.value.string.value);
+    free_global_env(env);
 }
 
 void test_scheme_evaluate_symbol() {
@@ -137,6 +169,10 @@ void test_scheme_evaluate_symbol() {
 
     SUMMA_TEST_ASSERT(!error.had);
     SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
+
+    summa_string_free(in.value.symbol.value);
+    summa_string_free(out.value.symbol.value);
+    free_global_env(env);
 }
 
 void test_scheme_evaluate_vector() {
@@ -155,6 +191,10 @@ void test_scheme_evaluate_vector() {
 
     SUMMA_TEST_ASSERT(!error.had);
     SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
+
+    summa_list_free(out.value.vector.value);
+    summa_list_free(vector);
+    free_global_env(env);
 }
 
 int main(int argc, char** argv) {
