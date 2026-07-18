@@ -8,7 +8,7 @@
 #include <summa/string/string.h>
 
 void test_scheme_read() {
-    SummaSchemeEnvironment env   = summa_scheme_environment_make_empty();
+    SummaSchemeEnvironment env = summa_scheme_environment_make_empty();
     SummaSchemeValue       value;
     SummaSchemeError       error = summa_scheme_read(env, "(define x 1)", &value);
     // TODO: Make this not fail
