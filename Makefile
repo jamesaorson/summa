@@ -39,7 +39,8 @@ else ifeq ($(UNAME_S),Darwin)
 		cmake \
 		ninja \
 		clang-format \
-		gcc-12
+		gcc-13
+	
 else
 	echo "Unsupported OS: $(UNAME_S)"
 	exit 1

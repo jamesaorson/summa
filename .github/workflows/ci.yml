@@ -30,7 +30,7 @@ jobs:
       - name: Check versions
         run: |
           clang-format --version
-          cc --version
+          gcc-13 --version
 
       - name: Configure
         run: |
