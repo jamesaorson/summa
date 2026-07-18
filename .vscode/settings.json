@@ -3,5 +3,10 @@
         "*.h": "c",
         ".clang-format": "yaml"
     },
-    "cmake.ctest.testSuiteDelimiter": "\\."
+    "cmake.ctest.testSuiteDelimiter": "\\.",
+    "cSpell.words": [
+        "endforeach",
+        "endfunction",
+        "fsanitize"
+    ]
 }
