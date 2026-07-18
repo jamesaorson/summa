@@ -12,17 +12,17 @@
 #include <stdlib.h>
 
 void test_scheme_read() {
-    SummaSchemeExpression expression;
-    SummaSchemeError      error = summa_scheme_read("(define x 1)", &expression);
+    SummaSchemeValue value;
+    SummaSchemeError error = summa_scheme_read("(define x 1)", &value);
     // TODO: Make this not fail
     SUMMA_TEST_ASSERT(error.had);
     SUMMA_TEST_ASSERT_EQ_STR("summa_scheme_read - NOT IMPLEMENTED", error.message);
 }
 
 void test_scheme_evaluate() {
-    SummaSchemeExpression expression = (SummaSchemeExpression){};
-    SummaSchemeValue      value;
-    SummaSchemeError      error = summa_scheme_evaluate(expression, &value);
+    SummaSchemeValue in = summa_make_scheme_boolean(true);
+    SummaSchemeValue out;
+    SummaSchemeError error = summa_scheme_evaluate(in, &out);
     // TODO: Make this not fail
     SUMMA_TEST_ASSERT(error.had);
     SUMMA_TEST_ASSERT_EQ_STR("summa_scheme_evaluate - NOT IMPLEMENTED", error.message);
@@ -116,7 +116,9 @@ void test_scheme_print_procedure() {
     }
 }
 
-#define HELLO_WORLD "hello world"
+#define HELLO "hello"
+#define WORLD "world"
+#define HELLO_WORLD HELLO " " WORLD
 
 void test_scheme_print_string() {
     SUMMA_TEST_SCOPED_FILE(f) {
@@ -129,20 +131,27 @@ void test_scheme_print_string() {
 }
 
 void test_scheme_print_symbol() {
-    // TODO: Finish, will be very hard
     SUMMA_TEST_SCOPED_FILE(f) {
-        SummaSchemeValue value = summa_make_scheme_symbol((void*)nullptr);
+        SummaSchemeValue value = summa_make_scheme_symbol(HELLO);
         SummaSchemeError error = summa_scheme_print(value, f.file);
-        SUMMA_TEST_ASSERT(error.had);
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT_FILE_EQ_STR(f, HELLO);
+        summa_string_free(value.value.symbol.value);
     }
 }
 
 void test_scheme_print_vector() {
-    // TODO: Finish
+    SummaSchemeValue values[2] = {
+        summa_make_scheme_integer(69),
+        summa_make_scheme_integer(420),
+    };
     SUMMA_TEST_SCOPED_FILE(f) {
-        SummaSchemeValue value = summa_make_scheme_vector((void*)nullptr);
-        SummaSchemeError error = summa_scheme_print(value, f.file);
-        SUMMA_TEST_ASSERT(error.had);
+        SummaList        vector = summa_list_make(values, sizeof(values) / sizeof(values[0]));
+        SummaSchemeValue value  = summa_make_scheme_vector(vector);
+        SummaSchemeError error  = summa_scheme_print(value, f.file);
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT_FILE_EQ_STR(f, "#(69 420)");
+        summa_list_free(vector);
     }
 }
 

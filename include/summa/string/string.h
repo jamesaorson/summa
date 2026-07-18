@@ -12,6 +12,7 @@ void        summa_string_clear(SummaString str);
 void        summa_string_copy(SummaString dest, SummaString src);
 void        summa_string_copy_cstr(SummaString dest, const char* src);
 void        summa_string_free(SummaString str);
+int         summa_string_cmp(SummaString left, SummaString right);
 
 #endif
 
@@ -45,6 +46,9 @@ void summa_string_copy_cstr(SummaString dest, const char* src) {
 }
 void summa_string_free(SummaString str) {
     summa_array_free((SummaArray)str);
+}
+int summa_string_cmp(SummaString left, SummaString right) {
+    return strcmp(left->value, right->value);
 }
 
 /* Add your function definitions here */

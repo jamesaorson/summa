@@ -1,6 +1,7 @@
 #ifndef SUMMA_SCHEME_H
 #define SUMMA_SCHEME_H
 
+#include <assert.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -30,23 +31,26 @@ typedef struct {
 
 typedef struct SummaSchemeValue SummaSchemeValue;
 
+bool summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeValue* right);
+
 typedef enum {
-    SchemeBoolean,
-    SchemeCharacter,
-    SchemeFloating,
-    SchemeInteger,
-    SchemeList,
-    SchemeProcedure,
-    SchemeString,
-    SchemeSymbol,
-    SchemeVector,
+    SummaSchemeBooleanType,
+    SummaSchemeCharacterType,
+    SummaSchemeFloatingType,
+    SummaSchemeIntegerType,
+    SummaSchemeListType,
+    SummaSchemeProcedureType,
+    SummaSchemeStringType,
+    SummaSchemeSymbolType,
+    SummaSchemeVectorType,
 } SummaSchemeValueType;
 
 typedef struct {
     bool value;
 } SummaSchemeBoolean;
 
-#define summa_make_scheme_boolean(val) ((SummaSchemeValue){.type = SchemeBoolean, .value.boolean = {.value = (val)}})
+#define summa_make_scheme_boolean(val) \
+    ((SummaSchemeValue){.type = SummaSchemeBooleanType, .value.boolean = {.value = (val)}})
 
 #define SUMMA_SCHEME_TRUE "#t"
 #define SUMMA_SCHEME_FALSE "#f"
@@ -56,20 +60,21 @@ typedef struct {
 } SummaSchemeCharacter;
 
 #define summa_make_scheme_character(val) \
-    ((SummaSchemeValue){.type = SchemeCharacter, .value.character = {.value = (val)}})
+    ((SummaSchemeValue){.type = SummaSchemeCharacterType, .value.character = {.value = (val)}})
 
 typedef struct {
     double value;
 } SummaSchemeFloating;
 
 #define summa_make_scheme_floating(val) \
-    ((SummaSchemeValue){.type = SchemeFloating, .value.floating = {.value = (val)}})
+    ((SummaSchemeValue){.type = SummaSchemeFloatingType, .value.floating = {.value = (val)}})
 
 typedef struct {
     int64_t value;
 } SummaSchemeInteger;
 
-#define summa_make_scheme_integer(val) ((SummaSchemeValue){.type = SchemeInteger, .value.integer = {.value = (val)}})
+#define summa_make_scheme_integer(val) \
+    ((SummaSchemeValue){.type = SummaSchemeIntegerType, .value.integer = {.value = (val)}})
 
 SUMMA_ARRAY_GENERATE_TYPE_DEF(SummaList, list, SummaSchemeValue)
 
@@ -77,7 +82,7 @@ typedef struct {
     SummaList value;
 } SummaSchemeList;
 
-#define summa_make_scheme_list(val) ((SummaSchemeValue){.type = SchemeList, .value.list = {.value = (val)}})
+#define summa_make_scheme_list(val) ((SummaSchemeValue){.type = SummaSchemeListType, .value.list = {.value = (val)}})
 
 typedef struct {
     // TODO: placeholder
@@ -85,28 +90,28 @@ typedef struct {
 } SummaSchemeProcedure;
 
 #define summa_make_scheme_procedure(val) \
-    ((SummaSchemeValue){.type = SchemeProcedure, .value.procedure = {.value = (val)}})
+    ((SummaSchemeValue){.type = SummaSchemeProcedureType, .value.procedure = {.value = (val)}})
 
 typedef struct {
     SummaString value;
 } SummaSchemeString;
 
 #define summa_make_scheme_string(val) \
-    ((SummaSchemeValue){.type = SchemeString, .value.string = {.value = summa_string_make(val)}})
+    ((SummaSchemeValue){.type = SummaSchemeStringType, .value.string = {.value = summa_string_make(val)}})
 
 typedef struct {
-    // TODO: placeholder
-    void* value;
+    SummaString value;
 } SummaSchemeSymbol;
 
-#define summa_make_scheme_symbol(val) ((SummaSchemeValue){.type = SchemeSymbol, .value.symbol = {.value = (val)}})
+#define summa_make_scheme_symbol(val) \
+    ((SummaSchemeValue){.type = SummaSchemeSymbolType, .value.symbol = {.value = summa_string_make(val)}})
 
 typedef struct {
-    // TODO: placeholder
-    void* value;
+    SummaList value;
 } SummaSchemeVector;
 
-#define summa_make_scheme_vector(val) ((SummaSchemeValue){.type = SchemeVector, .value.vector = {.value = (val)}})
+#define summa_make_scheme_vector(val) \
+    ((SummaSchemeValue){.type = SummaSchemeVectorType, .value.vector = {.value = (val)}})
 
 typedef union {
     SummaSchemeBoolean   boolean;
@@ -142,11 +147,80 @@ SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out);
 
 SUMMA_ARRAY_GENERATE_TYPE_IMPL(SummaList, list, SummaSchemeValue)
 
+bool summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeValue* right) {
+    if (left == right) {
+        return true;
+    }
+    if (left == nullptr || right == nullptr) {
+        return false;
+    }
+    if (left->type != right->type) {
+        return false;
+    }
+    const SummaSchemeValueType type = left->type;
+    switch (type) {
+    case SummaSchemeBooleanType: {
+        return left->value.boolean.value == right->value.boolean.value;
+    }
+    case SummaSchemeCharacterType: {
+        return left->value.character.value == right->value.character.value;
+    }
+    case SummaSchemeFloatingType: {
+        return left->value.floating.value == right->value.floating.value;
+    }
+    case SummaSchemeIntegerType: {
+        return left->value.integer.value == right->value.integer.value;
+    }
+    case SummaSchemeListType: {
+        SummaList leftList  = left->value.list.value;
+        SummaList rightList = right->value.list.value;
+        if (leftList->length != rightList->length) {
+            return false;
+        }
+        for (size_t i = 0; i < leftList->length; i++) {
+            if (!summa_scheme_value_equals(leftList->value + i, rightList->value + i)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    case SummaSchemeProcedureType: {
+        // TODO: Implement SummaSchemeProcedureType equality check
+        assert(false);
+        break;
+    }
+    case SummaSchemeStringType: {
+        return summa_string_cmp(left->value.string.value, right->value.string.value) == 0;
+    }
+    case SummaSchemeSymbolType: {
+        // TODO: Make this better by looking up in the environment's symbol map for equality
+        return summa_string_cmp(left->value.symbol.value, right->value.symbol.value) == 0;
+    }
+    case SummaSchemeVectorType: {
+        SummaList leftVector  = left->value.vector.value;
+        SummaList rightVector = right->value.vector.value;
+        if (leftVector->length != rightVector->length) {
+            return false;
+        }
+        for (size_t i = 0; i < leftVector->length; i++) {
+            if (!summa_scheme_value_equals(leftVector->value + i, rightVector->value + i)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    default: {
+        return false;
+    }
+    }
+}
+
 SummaSchemeError summa_scheme_read([[maybe_unused]] const char* inputText, [[maybe_unused]] SummaSchemeValue* out) {
     return summa_make_error("summa_scheme_read - NOT IMPLEMENTED");
 }
 SummaSchemeError summa_scheme_evaluate([[maybe_unused]] const SummaSchemeValue in,
                                        [[maybe_unused]] SummaSchemeValue*      out) {
+    // TODO: Check if the in value has been defined before. If so, return the SummaSchemeValue* of the global value.
     return summa_make_error("summa_scheme_evaluate - NOT IMPLEMENTED");
 }
 
@@ -156,7 +230,7 @@ SummaSchemeError summa_scheme_print([[maybe_unused]] const SummaSchemeValue valu
     }
 
     switch (value.type) {
-    case SchemeBoolean: {
+    case SummaSchemeBooleanType: {
         SummaSchemeBoolean val = value.value.boolean;
         if (val.value) {
             fprintf(out, SUMMA_SCHEME_TRUE);
@@ -164,19 +238,19 @@ SummaSchemeError summa_scheme_print([[maybe_unused]] const SummaSchemeValue valu
             fprintf(out, SUMMA_SCHEME_FALSE);
         }
     } break;
-    case SchemeCharacter: {
+    case SummaSchemeCharacterType: {
         SummaSchemeCharacter val = value.value.character;
         fprintf(out, "%c", val.value);
     } break;
-    case SchemeFloating: {
+    case SummaSchemeFloatingType: {
         SummaSchemeFloating val = value.value.floating;
         fprintf(out, "%f", val.value);
     } break;
-    case SchemeInteger: {
+    case SummaSchemeIntegerType: {
         SummaSchemeInteger val = value.value.integer;
         fprintf(out, "%" PRId64, val.value);
     } break;
-    case SchemeList: {
+    case SummaSchemeListType: {
         SummaSchemeList val = value.value.list;
         fprintf(out, "(");
         for (size_t i = 0; i < val.value->length; i++) {
@@ -188,19 +262,30 @@ SummaSchemeError summa_scheme_print([[maybe_unused]] const SummaSchemeValue valu
         }
         fprintf(out, ")");
     } break;
-    case SchemeProcedure: {
+    case SummaSchemeProcedureType: {
         return summa_make_error("summa_scheme_print - NOT IMPLEMENTED - SchemeProcedure");
     } break;
-    case SchemeString: {
+    case SummaSchemeStringType: {
         SummaSchemeString val = value.value.string;
         SummaString       str = val.value;
         fprintf(out, "\"%s\"", str->value);
     } break;
-    case SchemeSymbol: {
-        return summa_make_error("summa_scheme_print - NOT IMPLEMENTED - SchemeSymbol");
+    case SummaSchemeSymbolType: {
+        SummaSchemeSymbol val = value.value.symbol;
+        SummaString       str = val.value;
+        fprintf(out, "%s", str->value);
     } break;
-    case SchemeVector: {
-        return summa_make_error("summa_scheme_print - NOT IMPLEMENTED - SchemeVector");
+    case SummaSchemeVectorType: {
+        SummaSchemeVector val = value.value.vector;
+        fprintf(out, "#(");
+        for (size_t i = 0; i < val.value->length; i++) {
+            if (i != 0) {
+                fprintf(out, " ");
+            }
+            SummaSchemeValue next_value = val.value->value[i];
+            summa_scheme_print(next_value, out);
+        }
+        fprintf(out, ")");
     } break;
     default: {
         return summa_make_error("summa_scheme_print - Invalid value type");
