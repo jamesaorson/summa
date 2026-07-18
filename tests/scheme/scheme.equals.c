@@ -122,15 +122,25 @@ void test_scheme_equals_procedure() {
     SummaSchemeValue* left;
     SummaSchemeValue* right;
 
-    left  = &summa_make_scheme_procedure(summa_string_make("equal-check"), nullptr, nullptr);
-    right = &summa_make_scheme_procedure(summa_string_make("equal-check"), nullptr, nullptr);
+    SummaString left_name_a  = summa_string_make("equal-check");
+    SummaString right_name_a = summa_string_make("equal-check");
+    left                     = &summa_make_scheme_procedure(left_name_a, nullptr, nullptr);
+    right                    = &summa_make_scheme_procedure(right_name_a, nullptr, nullptr);
 
     SUMMA_TEST_ASSERT(summa_scheme_value_equals(left, right));
 
-    left  = &summa_make_scheme_procedure(summa_string_make("equal-check"), nullptr, nullptr);
-    right = &summa_make_scheme_procedure(summa_string_make("notequal-check"), nullptr, nullptr);
+    summa_string_free(left_name_a);
+    summa_string_free(right_name_a);
+
+    SummaString left_name_b  = summa_string_make("equal-check");
+    SummaString right_name_b = summa_string_make("notequal-check");
+    left                     = &summa_make_scheme_procedure(left_name_b, nullptr, nullptr);
+    right                    = &summa_make_scheme_procedure(right_name_b, nullptr, nullptr);
 
     SUMMA_TEST_ASSERT(!summa_scheme_value_equals(left, right));
+
+    summa_string_free(left_name_b);
+    summa_string_free(right_name_b);
 }
 
 void test_scheme_equals_string() {
