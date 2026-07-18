@@ -111,6 +111,19 @@ void test_scheme_print_procedure() {
         SUMMA_TEST_ASSERT(!error.had);
         SUMMA_TEST_ASSERT_FILE_EQ_STR(f, "#<procedure add2 (x y)>");
     }
+
+    for (size_t i = 0; i < body_proc_bindings->length; i++) {
+        summa_string_free(body_proc_bindings->value[i].value);
+    }
+    summa_symbol_list_free(body_proc_bindings);
+    summa_string_free(body_proc_name);
+    summa_list_free(def_body);
+
+    for (size_t i = 0; i < def_bindings->length; i++) {
+        summa_string_free(def_bindings->value[i].value);
+    }
+    summa_symbol_list_free(def_bindings);
+    summa_string_free(def_name);
 }
 
 #define HELLO "hello"
