@@ -172,13 +172,13 @@ bool summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeVa
         return left->value.integer.value == right->value.integer.value;
     }
     case SummaSchemeListType: {
-        SummaList leftList  = left->value.list.value;
-        SummaList rightList = right->value.list.value;
-        if (leftList->length != rightList->length) {
+        SummaList left_list  = left->value.list.value;
+        SummaList right_list = right->value.list.value;
+        if (left_list->length != right_list->length) {
             return false;
         }
-        for (size_t i = 0; i < leftList->length; i++) {
-            if (!summa_scheme_value_equals(leftList->value + i, rightList->value + i)) {
+        for (size_t i = 0; i < left_list->length; i++) {
+            if (!summa_scheme_value_equals(left_list->value + i, right_list->value + i)) {
                 return false;
             }
         }
