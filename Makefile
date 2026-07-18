@@ -32,7 +32,7 @@ ifeq ($(UNAME_S),Linux)
 		gdb \
 		cmake \
 		ninja-build
-	curl -o https://apt.llvm.org/llvm.sh /tmp/llvm.sh
+	curl -o /tmp/llvm.sh https://apt.llvm.org/llvm.sh
 	chmod +x /tmp/llvm.sh
 	sudo /tmp/llvm.sh 22
 	sudo ln -sf "/usr/bin/clang-format-22" /usr/local/bin/clang-format
