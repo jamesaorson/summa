@@ -26,10 +26,18 @@ jobs:
         run: npm install
 
       - name: Install clang-format
+        env:
+          # Keep in sync with the major version Homebrew's `clang-format`
+          # formula installs locally (see `make setup/tools`) — Ubuntu's apt
+          # repos lag behind and format wrapped macro continuations
+          # differently across major versions, which silently breaks `make
+          # check/c` for anyone on a newer local clang-format.
+          CLANG_FORMAT_MAJOR_VERSION: 22
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            clang-format
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh "$CLANG_FORMAT_MAJOR_VERSION"
+          sudo ln -sf "/usr/bin/clang-format-$CLANG_FORMAT_MAJOR_VERSION" /usr/bin/clang-format
 
       - name: Check versions
         run: |
