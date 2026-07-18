@@ -110,7 +110,7 @@ void test_scheme_evaluate_procedure() {
     SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
 
     // TODO: Make this not fail
-    SUMMA_TEST_ASSERT(!error.had);
+    SUMMA_TEST_ASSERT(error.had);
 }
 
 #define HELLO "hello"

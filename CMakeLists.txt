@@ -53,6 +53,18 @@ target_include_directories(
         $<INSTALL_INTERFACE:include>
 )
 
+# summa/array.h's SUMMA_ARRAY_GENERATE_TYPE_* macros give every generated
+# collection type (SummaList, SummaHashMapKeys, ...) the same field layout as
+# SummaArray_t and reinterpret-cast between them. That's legal by layout but
+# not by C's strict aliasing rules, since the named struct types are still
+# distinct — GCC's TBAA can cache a read across a write made through the
+# other type's pointer, silently going stale under -O2/-O3 (observed as
+# summa_hash_map_copy's length update not being visible to the caller).
+# -fno-strict-aliasing is the standard fix for this exact pattern (the same
+# reason the Linux kernel builds with it) and is supported identically by
+# GCC and Clang, so it's not a portability hazard.
+target_compile_options(summa INTERFACE -fno-strict-aliasing)
+
 if(SUMMA_BUILD_TESTS)
     include(CTest)
     enable_testing()
