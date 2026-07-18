@@ -43,6 +43,8 @@ void summa_test_assert_fail(const summa_test_failure_t* f);
         }                                                                 \
     } while (0)
 
+#define SUMMA_TEST_TODO(msg) SUMMA_TEST_ASSERT_MSG(false, "TODO: " msg)
+
 #define SUMMA_TEST_ASSERT_EQ(a, b) SUMMA_TEST_ASSERT((a) == (b))
 #define SUMMA_TEST_ASSERT_NEQ(a, b) SUMMA_TEST_ASSERT((a) != (b))
 
