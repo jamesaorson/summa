@@ -38,7 +38,8 @@ else ifeq ($(UNAME_S),Darwin)
 	brew install \
 		cmake \
 		ninja \
-		clang-format
+		clang-format \
+		gcc-12
 else
 	echo "Unsupported OS: $(UNAME_S)"
 	exit 1
