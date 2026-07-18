@@ -12,6 +12,13 @@
 # Expected on the command line:
 #   -D TEST_EXECUTABLE=... -D TEST_PREFIX=... -D SOURCE_FILE=... -D CTEST_FILE=...
 
+# file(STRINGS) below produces one list element per source line, including
+# blank ones. list(GET source_lines ${idx} ...) relies on idx lining up with
+# the real line number, so empty elements must be kept (CMP0007 NEW) rather
+# than silently dropped (CMP0007 OLD), which would also shift every index
+# after the first blank line.
+cmake_policy(SET CMP0007 NEW)
+
 execute_process(
     COMMAND "${TEST_EXECUTABLE}" --list
     OUTPUT_VARIABLE test_list_output
