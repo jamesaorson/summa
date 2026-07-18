@@ -144,6 +144,7 @@ void summa_array_set_at(SummaArray arr, size_t index, void* element) {
         ValueType* value;                                                          \
         size_t     length;                                                         \
         size_t     capacity;                                                       \
+        size_t     element_size;                                                   \
     } SUMMA_TOKEN_CONCAT2(NewType, _t);                                            \
     typedef SUMMA_TOKEN_CONCAT2(NewType, _t) * NewType;
 

@@ -111,6 +111,11 @@ void test_scheme_equals_list() {
 
     right->value.list.value->value[4].value.boolean.value = !right->value.list.value->value[4].value.boolean.value;
     SUMMA_TEST_ASSERT(!summa_scheme_value_equals(left, right));
+
+    summa_list_free(left_nested);
+    summa_list_free(right_nested);
+    summa_list_free(left_list);
+    summa_list_free(right_list);
 }
 
 void test_scheme_equals_procedure() {
@@ -200,6 +205,9 @@ void test_scheme_equals_vector() {
 
     right->value.vector.value->value[1].value.boolean.value = !right->value.vector.value->value[1].value.boolean.value;
     SUMMA_TEST_ASSERT(!summa_scheme_value_equals(left, right));
+
+    summa_list_free(left_vector);
+    summa_list_free(right_vector);
 }
 
 int main(int argc, char** argv) {
