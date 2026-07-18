@@ -32,6 +32,6 @@ foreach(test_source ${test_sources})
 
     add_executable(${target} "${test_source_name}")
     target_link_libraries(${target} PRIVATE summa::summa)
-    summa_discover_tests(${target} TEST_PREFIX "${test_name}.")
+    summa_discover_tests(${target} TEST_PREFIX "${test_name}." SOURCE_FILE "${test_source}")
     summa_add_test(${target})
 endforeach()

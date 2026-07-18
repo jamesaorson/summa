@@ -3,7 +3,10 @@
         "*.h": "c",
         ".clang-format": "yaml"
     },
-    "cmake.ctest.testSuiteDelimiter": "\\.",
+    "cmake.ctest.testExplorerIntegrationEnabled": false,
+    "cmakeExplorer.suiteDelimiter": ".",
+    "cmakeExplorer.testFileVar": "TEST_FILE",
+    "cmakeExplorer.testLineVar": "TEST_LINE",
     "cSpell.words": [
         "endforeach",
         "endfunction",
