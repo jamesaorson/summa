@@ -31,6 +31,8 @@ typedef struct {
 
 typedef struct SummaSchemeValue SummaSchemeValue;
 
+SUMMA_ARRAY_GENERATE_TYPE_DEF(SummaList, list, SummaSchemeValue)
+
 SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSchemeValue* src);
 bool             summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeValue* right);
 
@@ -77,14 +79,6 @@ typedef struct {
 #define summa_make_scheme_integer(val) \
     ((SummaSchemeValue){.type = SummaSchemeIntegerType, .value.integer = {.value = (val)}})
 
-SUMMA_ARRAY_GENERATE_TYPE_DEF(SummaList, list, SummaSchemeValue)
-
-typedef struct {
-    SummaList value;
-} SummaSchemeList;
-
-#define summa_make_scheme_list(val) ((SummaSchemeValue){.type = SummaSchemeListType, .value.list = {.value = (val)}})
-
 typedef struct {
     SummaString value;
 } SummaSchemeSymbol;
@@ -92,12 +86,12 @@ typedef struct {
 #define summa_make_scheme_symbol(val) \
     ((SummaSchemeValue){.type = SummaSchemeSymbolType, .value.symbol = {.value = summa_string_make(val)}})
 
-SUMMA_ARRAY_GENERATE_TYPE_DEF(SummaBindingList, binding_list, SummaSchemeSymbol)
+SUMMA_ARRAY_GENERATE_TYPE(SummaSchemeSymbolList, symbol_list, SummaSchemeSymbol)
 
 typedef struct {
-    SummaString      name;
-    SummaBindingList bindings;
-    SummaList        body;
+    SummaString           name;
+    SummaSchemeSymbolList bindings;
+    SummaList             body;
 } SummaSchemeProcedure;
 
 #define summa_make_scheme_procedure(name_, bindings_, body_)         \
@@ -110,6 +104,12 @@ typedef struct {
 
 #define summa_make_scheme_string(val) \
     ((SummaSchemeValue){.type = SummaSchemeStringType, .value.string = {.value = summa_string_make(val)}})
+
+typedef struct {
+    SummaList value;
+} SummaSchemeList;
+
+#define summa_make_scheme_list(val) ((SummaSchemeValue){.type = SummaSchemeListType, .value.list = {.value = (val)}})
 
 typedef struct {
     SummaList value;
@@ -136,12 +136,58 @@ struct SummaSchemeValue {
     SummaSchemeValueUnion value;
 };
 
+SUMMA_ARRAY_GENERATE_TYPE_IMPL(SummaList, list, SummaSchemeValue)
+
+typedef struct {
+    SummaString      name;
+    SummaSchemeValue value;
+} SummaSchemeBinding;
+
+#define summa_scheme_binding_make(name_, value_) \
+    (SummaSchemeBinding) {                       \
+        .name = name_, .value = value_           \
+    }
+
+SUMMA_ARRAY_GENERATE_TYPE(SummaSchemeBindingList, binding_list, SummaSchemeBinding)
+
+typedef struct SummaSchemeEnvironment_t* SummaSchemeEnvironment;
+struct SummaSchemeEnvironment_t {
+    SummaSchemeBindingList bindings;
+    SummaSchemeEnvironment parent;
+};
+
+#define summa_scheme_environment_make(bindings_, parent_) \
+    (&(struct SummaSchemeEnvironment_t){.bindings = (bindings_), .parent = (parent_)})
+#define summa_scheme_environment_make_empty() summa_scheme_environment_make(summa_binding_list_make_empty(), nullptr)
+
+SummaSchemeEnvironment summa_scheme_environment_make_global() {
+    SummaSchemeBindingList bindings = summa_binding_list_make_empty();
+    SummaSchemeEnvironment env      = summa_scheme_environment_make(bindings, nullptr);
+    SummaString            bindingName;
+
+    bindingName = summa_string_make("+");
+    summa_binding_list_push(
+        bindings,
+        &summa_scheme_binding_make(
+            bindingName,
+            summa_make_scheme_procedure(bindingName, summa_symbol_list_make_empty(), summa_list_make_empty())));
+
+    return env;
+}
+
+SummaSchemeError summa_scheme_environment_set(const SummaSchemeEnvironment env, SummaSchemeBinding newBinding);
+
+SummaSchemeError summa_scheme_environment_get(const SummaSchemeEnvironment env,
+                                              const SummaSchemeSymbol      symbol,
+                                              SummaSchemeBinding*          out);
+
 #pragma endregion Values
 
 #pragma region REPL
 
-SummaSchemeError summa_scheme_read(const char* inputText, SummaSchemeValue* out);
-SummaSchemeError summa_scheme_evaluate(const SummaSchemeValue in, SummaSchemeValue* out);
+SummaSchemeError summa_scheme_read(const SummaSchemeEnvironment env, const char* inputText, SummaSchemeValue* out);
+SummaSchemeError
+summa_scheme_evaluate(const SummaSchemeEnvironment env, const SummaSchemeValue in, SummaSchemeValue* out);
 SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out);
 
 #pragma endregion REPL
@@ -150,8 +196,140 @@ SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out);
 
 #ifdef SUMMA_SCHEME_IMPLEMENTATION
 
-SUMMA_ARRAY_GENERATE_TYPE_IMPL(SummaList, list, SummaSchemeValue)
-SUMMA_ARRAY_GENERATE_TYPE_IMPL(SummaBindingList, binding_list, SummaSchemeSymbol)
+#define ERROR_MESSAGE_LENGTH 1024
+char ERROR_MESSAGE[ERROR_MESSAGE_LENGTH];
+
+SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment env,
+                                   [[maybe_unused]] const char*                  inputText,
+                                   [[maybe_unused]] SummaSchemeValue*            out) {
+    return summa_make_error("summa_scheme_read - NOT IMPLEMENTED");
+}
+
+SummaSchemeError summa_scheme_evaluate([[maybe_unused]] const SummaSchemeEnvironment env,
+                                       const SummaSchemeValue                        in,
+                                       SummaSchemeValue*                             out) {
+    // TODO: Check if the in value has been defined before. If so, return the SummaSchemeValue* of the global value.
+    if (!out) {
+        return summa_make_error("summa_scheme_evaluate - Out file was null");
+    }
+
+    switch (in.type) {
+    case SummaSchemeBooleanType: {
+        *out = summa_make_scheme_boolean(in.value.boolean.value);
+    } break;
+    case SummaSchemeCharacterType: {
+        *out = summa_make_scheme_character(in.value.character.value);
+    } break;
+    case SummaSchemeFloatingType: {
+        *out = summa_make_scheme_floating(in.value.floating.value);
+    } break;
+    case SummaSchemeIntegerType: {
+        *out = summa_make_scheme_integer(in.value.integer.value);
+    } break;
+    case SummaSchemeListType: {
+        return summa_scheme_value_copy(out, &in);
+    } break;
+    case SummaSchemeProcedureType: {
+        return summa_make_error("summa_scheme_evaluate - procedure - NOT IMPLEMENTED");
+    } break;
+    case SummaSchemeStringType: {
+        *out = summa_make_scheme_string(in.value.string.value->value);
+    } break;
+    case SummaSchemeSymbolType: {
+        // TODO: May be wrong, as we want to return pointer, but for now we can use strings for that
+        *out = summa_make_scheme_symbol(in.value.string.value->value);
+    } break;
+    case SummaSchemeVectorType: {
+        return summa_scheme_value_copy(out, &in);
+    } break;
+    default: {
+        return summa_make_error("summa_scheme_evaluate - Invalid in type");
+    }
+    }
+
+    return summa_success();
+}
+
+SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out) {
+    if (!out) {
+        return summa_make_error("summa_scheme_print - Out file was null");
+    }
+
+    switch (value.type) {
+    case SummaSchemeBooleanType: {
+        SummaSchemeBoolean val = value.value.boolean;
+        if (val.value) {
+            fprintf(out, SUMMA_SCHEME_TRUE);
+        } else {
+            fprintf(out, SUMMA_SCHEME_FALSE);
+        }
+    } break;
+    case SummaSchemeCharacterType: {
+        SummaSchemeCharacter val = value.value.character;
+        fprintf(out, "%c", val.value);
+    } break;
+    case SummaSchemeFloatingType: {
+        SummaSchemeFloating val = value.value.floating;
+        fprintf(out, "%f", val.value);
+    } break;
+    case SummaSchemeIntegerType: {
+        SummaSchemeInteger val = value.value.integer;
+        fprintf(out, "%" PRId64, val.value);
+    } break;
+    case SummaSchemeListType: {
+        SummaSchemeList val = value.value.list;
+        fprintf(out, "(");
+        for (size_t i = 0; i < val.value->length; i++) {
+            if (i != 0) {
+                fprintf(out, " ");
+            }
+            SummaSchemeValue next_value = val.value->value[i];
+            summa_scheme_print(next_value, out);
+        }
+        fprintf(out, ")");
+    } break;
+    case SummaSchemeProcedureType: {
+        fprintf(out, "#<procedure %s (", value.value.procedure.name->value);
+        SummaSchemeSymbolList bindings = value.value.procedure.bindings;
+        for (size_t i = 0; i < bindings->length; i++) {
+            SummaSchemeSymbol binding = bindings->value[i];
+            if (i != 0) {
+                fprintf(out, " %s", binding.value->value);
+            } else {
+                fprintf(out, "%s", binding.value->value);
+            }
+        }
+        fprintf(out, ")>");
+    } break;
+    case SummaSchemeStringType: {
+        SummaSchemeString val = value.value.string;
+        SummaString       str = val.value;
+        fprintf(out, "\"%s\"", str->value);
+    } break;
+    case SummaSchemeSymbolType: {
+        SummaSchemeSymbol val = value.value.symbol;
+        SummaString       str = val.value;
+        fprintf(out, "%s", str->value);
+    } break;
+    case SummaSchemeVectorType: {
+        SummaSchemeVector val = value.value.vector;
+        fprintf(out, "#(");
+        for (size_t i = 0; i < val.value->length; i++) {
+            if (i != 0) {
+                fprintf(out, " ");
+            }
+            SummaSchemeValue next_value = val.value->value[i];
+            summa_scheme_print(next_value, out);
+        }
+        fprintf(out, ")");
+    } break;
+    default: {
+        return summa_make_error("summa_scheme_print - Invalid value type");
+    }
+    }
+
+    return summa_success();
+}
 
 SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSchemeValue* src) {
     SummaSchemeValueType type = src->type;
@@ -175,7 +353,7 @@ SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSche
     } break;
     case SummaSchemeProcedureType: {
         dest->value.procedure.name = summa_string_make(src->value.procedure.name->value);
-        summa_binding_list_copy(dest->value.procedure.bindings, src->value.procedure.bindings);
+        summa_symbol_list_copy(dest->value.procedure.bindings, src->value.procedure.bindings);
         summa_list_copy(dest->value.procedure.body, src->value.procedure.body);
     } break;
     case SummaSchemeStringType: {
@@ -262,131 +440,33 @@ bool summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeVa
     }
 }
 
-SummaSchemeError summa_scheme_read([[maybe_unused]] const char* inputText, [[maybe_unused]] SummaSchemeValue* out) {
-    return summa_make_error("summa_scheme_read - NOT IMPLEMENTED");
-}
-SummaSchemeError summa_scheme_evaluate(const SummaSchemeValue in, SummaSchemeValue* out) {
-    // TODO: Check if the in value has been defined before. If so, return the SummaSchemeValue* of the global value.
-    if (!out) {
-        return summa_make_error("summa_scheme_evaluate - Out file was null");
+SummaSchemeError summa_scheme_environment_set(const SummaSchemeEnvironment env, SummaSchemeBinding newBinding) {
+    for (size_t i = 0; i < env->bindings->length; i++) {
+        SummaSchemeBinding binding = env->bindings->value[i];
+        if (summa_string_cmp(binding.name, newBinding.name) == 0) {
+            summa_scheme_value_copy(&binding.value, &newBinding.value);
+            return summa_success();
+        }
     }
-
-    switch (in.type) {
-    case SummaSchemeBooleanType: {
-        *out = summa_make_scheme_boolean(in.value.boolean.value);
-    } break;
-    case SummaSchemeCharacterType: {
-        *out = summa_make_scheme_character(in.value.character.value);
-    } break;
-    case SummaSchemeFloatingType: {
-        *out = summa_make_scheme_floating(in.value.floating.value);
-    } break;
-    case SummaSchemeIntegerType: {
-        *out = summa_make_scheme_integer(in.value.integer.value);
-    } break;
-    case SummaSchemeListType: {
-        return summa_scheme_value_copy(out, &in);
-    } break;
-    case SummaSchemeProcedureType: {
-        return summa_make_error("summa_scheme_evaluate - procedure - NOT IMPLEMENTED");
-    } break;
-    case SummaSchemeStringType: {
-        *out = summa_make_scheme_string(in.value.string.value->value);
-    } break;
-    case SummaSchemeSymbolType: {
-        // TODO: May be wrong, as we want to return pointer, but for now we can use strings for that
-        *out = summa_make_scheme_symbol(in.value.string.value->value);
-    } break;
-    case SummaSchemeVectorType: {
-        return summa_scheme_value_copy(out, &in);
-    } break;
-    default: {
-        return summa_make_error("summa_scheme_evaluate - Invalid in type");
-    }
-    }
-
+    summa_binding_list_push(env->bindings, &newBinding);
     return summa_success();
 }
 
-SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out) {
-    if (!out) {
-        return summa_make_error("summa_scheme_print - Out file was null");
+SummaSchemeError summa_scheme_environment_get(const SummaSchemeEnvironment env,
+                                              const SummaSchemeSymbol      symbol,
+                                              SummaSchemeBinding*          out) {
+    for (size_t i = 0; i < env->bindings->length; i++) {
+        SummaSchemeBinding binding = env->bindings->value[i];
+        if (summa_string_cmp(binding.name, symbol.value) == 0) {
+            *out = binding;
+            return summa_success();
+        }
     }
-
-    switch (value.type) {
-    case SummaSchemeBooleanType: {
-        SummaSchemeBoolean val = value.value.boolean;
-        if (val.value) {
-            fprintf(out, SUMMA_SCHEME_TRUE);
-        } else {
-            fprintf(out, SUMMA_SCHEME_FALSE);
-        }
-    } break;
-    case SummaSchemeCharacterType: {
-        SummaSchemeCharacter val = value.value.character;
-        fprintf(out, "%c", val.value);
-    } break;
-    case SummaSchemeFloatingType: {
-        SummaSchemeFloating val = value.value.floating;
-        fprintf(out, "%f", val.value);
-    } break;
-    case SummaSchemeIntegerType: {
-        SummaSchemeInteger val = value.value.integer;
-        fprintf(out, "%" PRId64, val.value);
-    } break;
-    case SummaSchemeListType: {
-        SummaSchemeList val = value.value.list;
-        fprintf(out, "(");
-        for (size_t i = 0; i < val.value->length; i++) {
-            if (i != 0) {
-                fprintf(out, " ");
-            }
-            SummaSchemeValue next_value = val.value->value[i];
-            summa_scheme_print(next_value, out);
-        }
-        fprintf(out, ")");
-    } break;
-    case SummaSchemeProcedureType: {
-        fprintf(out, "#<procedure %s (", value.value.procedure.name->value);
-        SummaBindingList bindings = value.value.procedure.bindings;
-        for (size_t i = 0; i < bindings->length; i++) {
-            SummaSchemeSymbol binding = bindings->value[i];
-            if (i != 0) {
-                fprintf(out, " %s", binding.value->value);
-            } else {
-                fprintf(out, "%s", binding.value->value);
-            }
-        }
-        fprintf(out, ")>");
-    } break;
-    case SummaSchemeStringType: {
-        SummaSchemeString val = value.value.string;
-        SummaString       str = val.value;
-        fprintf(out, "\"%s\"", str->value);
-    } break;
-    case SummaSchemeSymbolType: {
-        SummaSchemeSymbol val = value.value.symbol;
-        SummaString       str = val.value;
-        fprintf(out, "%s", str->value);
-    } break;
-    case SummaSchemeVectorType: {
-        SummaSchemeVector val = value.value.vector;
-        fprintf(out, "#(");
-        for (size_t i = 0; i < val.value->length; i++) {
-            if (i != 0) {
-                fprintf(out, " ");
-            }
-            SummaSchemeValue next_value = val.value->value[i];
-            summa_scheme_print(next_value, out);
-        }
-        fprintf(out, ")");
-    } break;
-    default: {
-        return summa_make_error("summa_scheme_print - Invalid value type");
+    if (env->parent) {
+        return summa_scheme_environment_get(env->parent, symbol, out);
     }
-    }
-
-    return summa_success();
+    snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "Unbound variable: %s", symbol.value->value);
+    return summa_make_error(ERROR_MESSAGE);
 }
 
 #endif

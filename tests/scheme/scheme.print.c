@@ -92,18 +92,18 @@ void test_scheme_print_list() {
 
 void test_scheme_print_procedure() {
     // TODO: Finish
-    SummaString      def_name     = summa_string_make("add2");
-    SummaBindingList def_bindings = summa_binding_list_make_empty();
-    SummaList        def_body     = summa_list_make_empty();
-    SummaSchemeValue def          = summa_make_scheme_procedure(def_name, def_bindings, def_body);
+    SummaString           def_name     = summa_string_make("add2");
+    SummaSchemeSymbolList def_bindings = summa_symbol_list_make_empty();
+    SummaList             def_body     = summa_list_make_empty();
+    SummaSchemeValue      def          = summa_make_scheme_procedure(def_name, def_bindings, def_body);
 
-    summa_binding_list_push(def_bindings, &(SummaSchemeSymbol){.value = summa_string_make("x")});
-    summa_binding_list_push(def_bindings, &(SummaSchemeSymbol){.value = summa_string_make("y")});
+    summa_symbol_list_push(def_bindings, &(SummaSchemeSymbol){.value = summa_string_make("x")});
+    summa_symbol_list_push(def_bindings, &(SummaSchemeSymbol){.value = summa_string_make("y")});
 
-    SummaString      body_proc_name     = summa_string_make("+");
-    SummaBindingList body_proc_bindings = summa_binding_list_make_empty();
-    summa_binding_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("x")});
-    summa_binding_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("y")});
+    SummaString           body_proc_name     = summa_string_make("+");
+    SummaSchemeSymbolList body_proc_bindings = summa_symbol_list_make_empty();
+    summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("x")});
+    summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("y")});
     summa_list_push(def_body, &summa_make_scheme_procedure(body_proc_name, body_proc_bindings, nullptr));
 
     SUMMA_TEST_SCOPED_FILE(f) {

@@ -8,8 +8,9 @@
 #include <summa/string/string.h>
 
 void test_scheme_read() {
-    SummaSchemeValue value;
-    SummaSchemeError error = summa_scheme_read("(define x 1)", &value);
+    SummaSchemeEnvironment env   = summa_scheme_environment_make_empty();
+    SummaSchemeValue       value;
+    SummaSchemeError       error = summa_scheme_read(env, "(define x 1)", &value);
     // TODO: Make this not fail
     SUMMA_TEST_ASSERT(error.had);
     SUMMA_TEST_ASSERT_EQ_STR("summa_scheme_read - NOT IMPLEMENTED", error.message);
