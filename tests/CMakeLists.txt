@@ -7,7 +7,6 @@ function(summa_add_test target)
         -Wextra
         -Wpedantic
         -Werror
-        $<$<C_COMPILER_ID:Clang,AppleClang>:-Wc23-extensions>
         $<$<CONFIG:Debug>:-fsanitize=address,undefined>
     )
     target_link_options(${target} PRIVATE
