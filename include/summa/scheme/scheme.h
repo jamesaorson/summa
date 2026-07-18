@@ -26,15 +26,6 @@ typedef struct {
 
 #pragma endregion Error handling
 
-#pragma region Expression
-
-typedef struct {
-    // TODO: placeholder
-    void* value;
-} SummaSchemeExpression;
-
-#pragma endregion Expression
-
 #pragma region Values
 
 typedef struct SummaSchemeValue SummaSchemeValue;
@@ -139,8 +130,8 @@ struct SummaSchemeValue {
 
 #pragma region REPL
 
-SummaSchemeError summa_scheme_read(const char* inputText, SummaSchemeExpression* out);
-SummaSchemeError summa_scheme_evaluate(const SummaSchemeExpression expression, SummaSchemeValue* out);
+SummaSchemeError summa_scheme_read(const char* inputText, SummaSchemeValue* out);
+SummaSchemeError summa_scheme_evaluate(const SummaSchemeValue in, SummaSchemeValue* out);
 SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out);
 
 #pragma endregion REPL
@@ -151,12 +142,11 @@ SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out);
 
 SUMMA_ARRAY_GENERATE_TYPE_IMPL(SummaList, list, SummaSchemeValue)
 
-SummaSchemeError summa_scheme_read([[maybe_unused]] const char*            inputText,
-                                   [[maybe_unused]] SummaSchemeExpression* out) {
+SummaSchemeError summa_scheme_read([[maybe_unused]] const char* inputText, [[maybe_unused]] SummaSchemeValue* out) {
     return summa_make_error("summa_scheme_read - NOT IMPLEMENTED");
 }
-SummaSchemeError summa_scheme_evaluate([[maybe_unused]] const SummaSchemeExpression expression,
-                                       [[maybe_unused]] SummaSchemeValue*           out) {
+SummaSchemeError summa_scheme_evaluate([[maybe_unused]] const SummaSchemeValue in,
+                                       [[maybe_unused]] SummaSchemeValue*      out) {
     return summa_make_error("summa_scheme_evaluate - NOT IMPLEMENTED");
 }
 
