@@ -156,24 +156,16 @@ struct SummaSchemeEnvironment_t {
     SummaSchemeEnvironment parent;
 };
 
+void summa_scheme_environment_init_global(SummaSchemeEnvironment env);
+
 #define summa_scheme_environment_make(bindings_, parent_) \
     (&(struct SummaSchemeEnvironment_t){.bindings = (bindings_), .parent = (parent_)})
 #define summa_scheme_environment_make_empty() summa_scheme_environment_make(summa_binding_list_make_empty(), nullptr)
-
-SummaSchemeEnvironment summa_scheme_environment_make_global() {
-    SummaSchemeBindingList bindings = summa_binding_list_make_empty();
-    SummaSchemeEnvironment env      = summa_scheme_environment_make(bindings, nullptr);
-    SummaString            bindingName;
-
-    bindingName = summa_string_make("+");
-    summa_binding_list_push(
-        bindings,
-        &summa_scheme_binding_make(
-            bindingName,
-            summa_make_scheme_procedure(bindingName, summa_symbol_list_make_empty(), summa_list_make_empty())));
-
-    return env;
-}
+#define summa_scheme_environment_make_global(env)    \
+    do {                                             \
+        env = summa_scheme_environment_make_empty(); \
+        summa_scheme_environment_init_global(env);   \
+    } while (0)
 
 SummaSchemeError summa_scheme_environment_set(const SummaSchemeEnvironment env, SummaSchemeBinding newBinding);
 
@@ -438,6 +430,18 @@ bool summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeVa
         return false;
     }
     }
+}
+
+void summa_scheme_environment_init_global(SummaSchemeEnvironment env) {
+    SummaSchemeBindingList bindings = env->bindings;
+    SummaString            bindingName;
+
+    bindingName = summa_string_make("+");
+    summa_binding_list_push(
+        bindings,
+        &summa_scheme_binding_make(
+            bindingName,
+            summa_make_scheme_procedure(bindingName, summa_symbol_list_make_empty(), summa_list_make_empty())));
 }
 
 SummaSchemeError summa_scheme_environment_set(const SummaSchemeEnvironment env, SummaSchemeBinding newBinding) {
