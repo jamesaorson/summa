@@ -14,6 +14,8 @@ void test_scheme_read() {
     // TODO: Make this not fail
     SUMMA_TEST_ASSERT(error.had);
     SUMMA_TEST_ASSERT_EQ_STR("summa_scheme_read - NOT IMPLEMENTED", error.message);
+
+    summa_binding_list_free(env->bindings);
 }
 
 int main(int argc, char** argv) {
