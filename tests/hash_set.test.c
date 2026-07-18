@@ -136,8 +136,8 @@ void test_hash_set_copy() {
     summa_hash_set_free(dest);
 }
 
-int main(void) {
-    summa_test_begin("hash_set");
+int main(int argc, char** argv) {
+    summa_test_begin("hash_set", argc, argv);
     SUMMA_TEST_RUN(test_hash_is_deterministic);
     SUMMA_TEST_RUN(test_hash_differs_for_different_values);
     SUMMA_TEST_RUN(test_hash_set_make_empty);

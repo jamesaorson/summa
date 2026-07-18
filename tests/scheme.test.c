@@ -328,8 +328,8 @@ void test_scheme_equals_vector() {
     SUMMA_TEST_ASSERT(!summa_scheme_value_equals(left, right));
 }
 
-int main(void) {
-    summa_test_begin("scheme");
+int main(int argc, char** argv) {
+    summa_test_begin("scheme", argc, argv);
     SUMMA_TEST_RUN(test_scheme_read);
     SUMMA_TEST_RUN(test_scheme_evaluate);
 

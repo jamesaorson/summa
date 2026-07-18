@@ -310,8 +310,8 @@ void test_array_contains_element_wider_than_pointer() {
     summa_array_free(array);
 }
 
-int main(void) {
-    summa_test_begin("scheme.array");
+int main(int argc, char** argv) {
+    summa_test_begin("scheme.array", argc, argv);
     SUMMA_TEST_RUN(test_array_make);
     SUMMA_TEST_RUN(test_array_make_zero_elements);
     SUMMA_TEST_RUN(test_array_make_empty);

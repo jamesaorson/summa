@@ -144,8 +144,8 @@ void test_hash_map_copy() {
     summa_hash_map_free(dest);
 }
 
-int main(void) {
-    summa_test_begin("hash_map");
+int main(int argc, char** argv) {
+    summa_test_begin("hash_map", argc, argv);
     SUMMA_TEST_RUN(test_hash_map_make_empty);
     SUMMA_TEST_RUN(test_hash_map_put_new_key);
     SUMMA_TEST_RUN(test_hash_map_put_and_get_roundtrip);

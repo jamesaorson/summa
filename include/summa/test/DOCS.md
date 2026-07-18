@@ -30,9 +30,9 @@ void test_addition(void)
     SUMMA_TEST_ASSERT_EQ_INT(42, 40 + 2);
 }
 
-int main(void)
+int main(int argc, char** argv)
 {
-    summa_test_begin("arithmetic");
+    summa_test_begin("arithmetic", argc, argv);
     SUMMA_TEST_RUN(test_addition);
     return summa_test_end();
 }
@@ -42,22 +42,37 @@ int main(void)
 
 ### Lifecycle
 
-#### `void summa_test_begin(const char *suite_name)`
+#### `void summa_test_begin(const char *suite_name, int argc, char **argv)`
 
 Initialises the test context and prints the suite header. Call once before any
-`SUMMA_TEST_RUN`.
+`SUMMA_TEST_RUN`, passing `main`'s own `argc`/`argv` straight through.
+
+`argv` selects what runs, mirroring how `gtest_filter`/`gtest_list_tests` work:
+
+| Invocation             | Effect                                                                |
+| ---------------------- | --------------------------------------------------------------------- |
+| `<binary>`             | Runs every test in the suite (previous behavior, unchanged).          |
+| `<binary> <test_name>` | Runs only the test whose function name matches `<test_name>` exactly. |
+| `<binary> --list`      | Prints every test name in the suite, one per line, and runs none.     |
+
+This makes each test case individually runnable from the command line, and is
+what `summa_discover_tests()` (see `cmake/SummaTestDiscover.cmake`) uses to
+register one CTest test per case instead of one per executable.
 
 #### `int summa_test_end(void)`
 
 Prints a pass/fail summary. Returns `0` if every test passed, `1` otherwise.
-Pass the return value directly to `return` from `main`.
+Pass the return value directly to `return` from `main`. In `--list` mode, prints
+nothing and always returns `0`.
 
 ### Running tests
 
 #### `SUMMA_TEST_RUN(fn)`
 
-Calls `fn()`, then records it as passed or failed based on whether any assertion
-inside it fired. Prints a one-line result per test function.
+In list mode, prints `fn`'s name and does nothing else. If a filter is active
+and doesn't match `fn`, skips it silently. Otherwise calls `fn()`, then records
+it as passed or failed based on whether any assertion inside it fired, and
+prints a one-line result.
 
 All assertions in a test function are always evaluated — there is no early exit
 on the first failure.

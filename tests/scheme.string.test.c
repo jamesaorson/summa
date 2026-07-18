@@ -141,8 +141,8 @@ void test_string_copy_cstr_empty_string() {
     summa_string_free(dest);
 }
 
-int main(void) {
-    summa_test_begin("scheme.string");
+int main(int argc, char** argv) {
+    summa_test_begin("scheme.string", argc, argv);
     SUMMA_TEST_RUN(test_string_make);
     SUMMA_TEST_RUN(test_string_make_empty_cstr);
     SUMMA_TEST_RUN(test_string_make_empty);
