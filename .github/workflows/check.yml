@@ -31,7 +31,9 @@ jobs:
 
       - name: Check versions
         run: |
+          which -a clang-format
           clang-format --version
+          which -a gcc
           gcc --version
 
       - name: Check C code
