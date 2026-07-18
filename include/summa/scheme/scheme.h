@@ -161,11 +161,8 @@ void summa_scheme_environment_init_global(SummaSchemeEnvironment env);
 #define summa_scheme_environment_make(bindings_, parent_) \
     (&(struct SummaSchemeEnvironment_t){.bindings = (bindings_), .parent = (parent_)})
 #define summa_scheme_environment_make_empty() summa_scheme_environment_make(summa_binding_list_make_empty(), nullptr)
-#define summa_scheme_environment_make_global(env)    \
-    do {                                             \
-        env = summa_scheme_environment_make_empty(); \
-        summa_scheme_environment_init_global(env);   \
-    } while (0)
+#define summa_scheme_environment_make_global(env) \
+    ((env) = summa_scheme_environment_make_empty(), summa_scheme_environment_init_global((env)))
 
 SummaSchemeError summa_scheme_environment_set(const SummaSchemeEnvironment env, SummaSchemeBinding newBinding);
 
