@@ -31,8 +31,11 @@ ifeq ($(UNAME_S),Linux)
 		build-essential \
 		gdb \
 		cmake \
-		ninja-build \
-		clang-format
+		ninja-build
+	curl -o https://apt.llvm.org/llvm.sh /tmp/llvm.sh
+	chmod +x /tmp/llvm.sh
+	sudo /tmp/llvm.sh 22
+	sudo ln -sf "/usr/bin/clang-format-22" /usr/local/bin/clang-format
 else ifeq ($(UNAME_S),Darwin)
 	xcode-select -p >/dev/null 2>&1 || xcode-select --install
 	brew install \
