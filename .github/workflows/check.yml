@@ -37,7 +37,8 @@ jobs:
           wget https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo ./llvm.sh "$CLANG_FORMAT_MAJOR_VERSION"
-          sudo ln -sf "/usr/bin/clang-format-$CLANG_FORMAT_MAJOR_VERSION" /usr/bin/clang-format
+          sudo ln -sf "/usr/bin/clang-format-$CLANG_FORMAT_MAJOR_VERSION" /usr/local/bin/clang-format
+          echo "clang-format version: $(clang-format --version)"
 
       - name: Check versions
         run: |
