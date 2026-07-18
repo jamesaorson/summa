@@ -31,7 +31,8 @@ typedef struct {
 
 typedef struct SummaSchemeValue SummaSchemeValue;
 
-bool summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeValue* right);
+SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSchemeValue* src);
+bool             summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeValue* right);
 
 typedef enum {
     SummaSchemeBooleanType,
@@ -152,6 +153,49 @@ SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out);
 SUMMA_ARRAY_GENERATE_TYPE_IMPL(SummaList, list, SummaSchemeValue)
 SUMMA_ARRAY_GENERATE_TYPE_IMPL(SummaBindingList, binding_list, SummaSchemeSymbol)
 
+SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSchemeValue* src) {
+    SummaSchemeValueType type = src->type;
+    dest->type                = type;
+    switch (type) {
+    case SummaSchemeBooleanType: {
+        dest->value = src->value;
+    } break;
+    case SummaSchemeCharacterType: {
+        dest->value = src->value;
+    } break;
+    case SummaSchemeFloatingType: {
+        dest->value = src->value;
+    } break;
+    case SummaSchemeIntegerType: {
+        dest->value = src->value;
+    } break;
+    case SummaSchemeListType: {
+        dest->value.list.value = summa_list_make_empty();
+        summa_list_copy(dest->value.list.value, src->value.list.value);
+    } break;
+    case SummaSchemeProcedureType: {
+        dest->value.procedure.name = summa_string_make(src->value.procedure.name->value);
+        summa_binding_list_copy(dest->value.procedure.bindings, src->value.procedure.bindings);
+        summa_list_copy(dest->value.procedure.body, src->value.procedure.body);
+    } break;
+    case SummaSchemeStringType: {
+        dest->value.string.value = summa_string_make(src->value.string.value->value);
+    } break;
+    case SummaSchemeSymbolType: {
+        dest->value.symbol.value = summa_string_make(src->value.symbol.value->value);
+    } break;
+    case SummaSchemeVectorType: {
+        dest->value.vector.value = summa_list_make_empty();
+        summa_list_copy(dest->value.vector.value, src->value.vector.value);
+    } break;
+    default: {
+        summa_make_error("summa_scheme_value_copy - Invalid scheme type provided");
+    } break;
+    }
+
+    return summa_success();
+}
+
 bool summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeValue* right) {
     if (left == right) {
         return true;
@@ -221,13 +265,50 @@ bool summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeVa
 SummaSchemeError summa_scheme_read([[maybe_unused]] const char* inputText, [[maybe_unused]] SummaSchemeValue* out) {
     return summa_make_error("summa_scheme_read - NOT IMPLEMENTED");
 }
-SummaSchemeError summa_scheme_evaluate([[maybe_unused]] const SummaSchemeValue in,
-                                       [[maybe_unused]] SummaSchemeValue*      out) {
+SummaSchemeError summa_scheme_evaluate(const SummaSchemeValue in, SummaSchemeValue* out) {
     // TODO: Check if the in value has been defined before. If so, return the SummaSchemeValue* of the global value.
-    return summa_make_error("summa_scheme_evaluate - NOT IMPLEMENTED");
+    if (!out) {
+        return summa_make_error("summa_scheme_evaluate - Out file was null");
+    }
+
+    switch (in.type) {
+    case SummaSchemeBooleanType: {
+        *out = summa_make_scheme_boolean(in.value.boolean.value);
+    } break;
+    case SummaSchemeCharacterType: {
+        *out = summa_make_scheme_character(in.value.character.value);
+    } break;
+    case SummaSchemeFloatingType: {
+        *out = summa_make_scheme_floating(in.value.floating.value);
+    } break;
+    case SummaSchemeIntegerType: {
+        *out = summa_make_scheme_integer(in.value.integer.value);
+    } break;
+    case SummaSchemeListType: {
+        return summa_scheme_value_copy(out, &in);
+    } break;
+    case SummaSchemeProcedureType: {
+        return summa_make_error("summa_scheme_evaluate - procedure - NOT IMPLEMENTED");
+    } break;
+    case SummaSchemeStringType: {
+        *out = summa_make_scheme_string(in.value.string.value->value);
+    } break;
+    case SummaSchemeSymbolType: {
+        // TODO: May be wrong, as we want to return pointer, but for now we can use strings for that
+        *out = summa_make_scheme_symbol(in.value.string.value->value);
+    } break;
+    case SummaSchemeVectorType: {
+        return summa_scheme_value_copy(out, &in);
+    } break;
+    default: {
+        return summa_make_error("summa_scheme_evaluate - Invalid in type");
+    }
+    }
+
+    return summa_success();
 }
 
-SummaSchemeError summa_scheme_print([[maybe_unused]] const SummaSchemeValue value, [[maybe_unused]] FILE* out) {
+SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out) {
     if (!out) {
         return summa_make_error("summa_scheme_print - Out file was null");
     }

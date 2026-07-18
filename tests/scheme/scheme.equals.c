@@ -14,7 +14,7 @@
 
 #define HELLO "hello"
 #define WORLD "world"
-#define HELLO_WORLD "hello world"
+#define HELLO_WORLD HELLO " " WORLD
 
 void test_scheme_equals_boolean() {
     SummaSchemeValue* left;
@@ -51,6 +51,8 @@ void test_scheme_equals_character() {
 }
 
 void test_scheme_equals_floating() {
+    summa_test_random_seed();
+
     SummaSchemeValue* left;
     SummaSchemeValue* right;
 
