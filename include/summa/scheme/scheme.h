@@ -85,12 +85,23 @@ typedef struct {
 #define summa_make_scheme_list(val) ((SummaSchemeValue){.type = SummaSchemeListType, .value.list = {.value = (val)}})
 
 typedef struct {
-    // TODO: placeholder
-    void* value;
+    SummaString value;
+} SummaSchemeSymbol;
+
+#define summa_make_scheme_symbol(val) \
+    ((SummaSchemeValue){.type = SummaSchemeSymbolType, .value.symbol = {.value = summa_string_make(val)}})
+
+SUMMA_ARRAY_GENERATE_TYPE_DEF(SummaBindingList, binding_list, SummaSchemeSymbol)
+
+typedef struct {
+    SummaString      name;
+    SummaBindingList bindings;
+    SummaList        body;
 } SummaSchemeProcedure;
 
-#define summa_make_scheme_procedure(val) \
-    ((SummaSchemeValue){.type = SummaSchemeProcedureType, .value.procedure = {.value = (val)}})
+#define summa_make_scheme_procedure(name_, bindings_, body_)         \
+    ((SummaSchemeValue){.type            = SummaSchemeProcedureType, \
+                        .value.procedure = {.name = (name_), .bindings = (bindings_), .body = (body_)}})
 
 typedef struct {
     SummaString value;
@@ -98,13 +109,6 @@ typedef struct {
 
 #define summa_make_scheme_string(val) \
     ((SummaSchemeValue){.type = SummaSchemeStringType, .value.string = {.value = summa_string_make(val)}})
-
-typedef struct {
-    SummaString value;
-} SummaSchemeSymbol;
-
-#define summa_make_scheme_symbol(val) \
-    ((SummaSchemeValue){.type = SummaSchemeSymbolType, .value.symbol = {.value = summa_string_make(val)}})
 
 typedef struct {
     SummaList value;
@@ -146,6 +150,7 @@ SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out);
 #ifdef SUMMA_SCHEME_IMPLEMENTATION
 
 SUMMA_ARRAY_GENERATE_TYPE_IMPL(SummaList, list, SummaSchemeValue)
+SUMMA_ARRAY_GENERATE_TYPE_IMPL(SummaBindingList, binding_list, SummaSchemeSymbol)
 
 bool summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeValue* right) {
     if (left == right) {
@@ -263,7 +268,17 @@ SummaSchemeError summa_scheme_print([[maybe_unused]] const SummaSchemeValue valu
         fprintf(out, ")");
     } break;
     case SummaSchemeProcedureType: {
-        return summa_make_error("summa_scheme_print - NOT IMPLEMENTED - SchemeProcedure");
+        fprintf(out, "#<procedure %s (", value.value.procedure.name->value);
+        SummaBindingList bindings = value.value.procedure.bindings;
+        for (size_t i = 0; i < bindings->length; i++) {
+            SummaSchemeSymbol binding = bindings->value[i];
+            if (i != 0) {
+                fprintf(out, " %s", binding.value->value);
+            } else {
+                fprintf(out, "%s", binding.value->value);
+            }
+        }
+        fprintf(out, ")>");
     } break;
     case SummaSchemeStringType: {
         SummaSchemeString val = value.value.string;
