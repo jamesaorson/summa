@@ -150,22 +150,32 @@ void test_scheme_equals_string() {
     left  = &summa_make_scheme_string(HELLO_WORLD);
     right = &summa_make_scheme_string(HELLO_WORLD);
     SUMMA_TEST_ASSERT(summa_scheme_value_equals(left, right));
+    summa_string_free(left->value.string.value);
+    summa_string_free(right->value.string.value);
 
     left  = &summa_make_scheme_string(HELLO_WORLD);
     right = &summa_make_scheme_string(HELLO);
     SUMMA_TEST_ASSERT(!summa_scheme_value_equals(left, right));
+    summa_string_free(left->value.string.value);
+    summa_string_free(right->value.string.value);
 
     left  = &summa_make_scheme_string(HELLO_WORLD);
     right = &summa_make_scheme_string(WORLD);
     SUMMA_TEST_ASSERT(!summa_scheme_value_equals(left, right));
+    summa_string_free(left->value.string.value);
+    summa_string_free(right->value.string.value);
 
     left  = &summa_make_scheme_string(HELLO);
     right = &summa_make_scheme_string(HELLO_WORLD);
     SUMMA_TEST_ASSERT(!summa_scheme_value_equals(left, right));
+    summa_string_free(left->value.string.value);
+    summa_string_free(right->value.string.value);
 
     left  = &summa_make_scheme_string(WORLD);
     right = &summa_make_scheme_string(HELLO_WORLD);
     SUMMA_TEST_ASSERT(!summa_scheme_value_equals(left, right));
+    summa_string_free(left->value.string.value);
+    summa_string_free(right->value.string.value);
 }
 
 void test_scheme_equals_symbol() {
@@ -175,22 +185,32 @@ void test_scheme_equals_symbol() {
     left  = &summa_make_scheme_symbol(HELLO_WORLD);
     right = &summa_make_scheme_symbol(HELLO_WORLD);
     SUMMA_TEST_ASSERT(summa_scheme_value_equals(left, right));
+    summa_string_free(left->value.symbol.value);
+    summa_string_free(right->value.symbol.value);
 
     left  = &summa_make_scheme_symbol(HELLO_WORLD);
     right = &summa_make_scheme_symbol(HELLO);
     SUMMA_TEST_ASSERT(!summa_scheme_value_equals(left, right));
+    summa_string_free(left->value.symbol.value);
+    summa_string_free(right->value.symbol.value);
 
     left  = &summa_make_scheme_symbol(HELLO_WORLD);
     right = &summa_make_scheme_symbol(WORLD);
     SUMMA_TEST_ASSERT(!summa_scheme_value_equals(left, right));
+    summa_string_free(left->value.symbol.value);
+    summa_string_free(right->value.symbol.value);
 
     left  = &summa_make_scheme_symbol(HELLO);
     right = &summa_make_scheme_symbol(HELLO_WORLD);
     SUMMA_TEST_ASSERT(!summa_scheme_value_equals(left, right));
+    summa_string_free(left->value.symbol.value);
+    summa_string_free(right->value.symbol.value);
 
     left  = &summa_make_scheme_symbol(WORLD);
     right = &summa_make_scheme_symbol(HELLO_WORLD);
     SUMMA_TEST_ASSERT(!summa_scheme_value_equals(left, right));
+    summa_string_free(left->value.symbol.value);
+    summa_string_free(right->value.symbol.value);
 }
 
 void test_scheme_equals_vector() {
