@@ -35,7 +35,7 @@ ifeq ($(UNAME_S),Linux)
 	curl -o /tmp/llvm.sh https://apt.llvm.org/llvm.sh
 	chmod +x /tmp/llvm.sh
 	sudo /tmp/llvm.sh 22
-	sudo mv -f /usr/bin/clang-format-22 /usr/bin/clang-format
+	sudo apt-get install -y clang-format-22
 else ifeq ($(UNAME_S),Darwin)
 	xcode-select -p >/dev/null 2>&1 || xcode-select --install
 	brew install \
