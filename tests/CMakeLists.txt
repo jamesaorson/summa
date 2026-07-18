@@ -1,17 +1,31 @@
 # summa_add_test(<target>)
 # Configures a test executable with strict compiler flags and, in Debug builds,
 # AddressSanitizer + UndefinedBehaviorSanitizer.
+#
+# Homebrew's GCC on macOS ships the sanitizer headers but not the
+# libasan/libubsan runtimes (Darwin sanitizer support is Clang-only there),
+# so linking -fsanitize=address,undefined fails. Skip sanitizers for that one
+# combination; CI (Linux + GCC) still gets full coverage.
+set(SUMMA_SANITIZERS_SUPPORTED ON)
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set(SUMMA_SANITIZERS_SUPPORTED OFF)
+endif()
+
 function(summa_add_test target)
     target_compile_options(${target} PRIVATE
         -Wall
         -Wextra
         -Wpedantic
         -Werror
-        $<$<CONFIG:Debug>:-fsanitize=address,undefined>
     )
-    target_link_options(${target} PRIVATE
-        $<$<CONFIG:Debug>:-fsanitize=address,undefined>
-    )
+    if(SUMMA_SANITIZERS_SUPPORTED)
+        target_compile_options(${target} PRIVATE
+            $<$<CONFIG:Debug>:-fsanitize=address,undefined>
+        )
+        target_link_options(${target} PRIVATE
+            $<$<CONFIG:Debug>:-fsanitize=address,undefined>
+        )
+    endif()
 endfunction()
 
 include("${CMAKE_SOURCE_DIR}/cmake/SummaTestDiscover.cmake")

@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.25...4.2)
 
+# Pick a GCC 13+ off PATH before the compiler is detected, so this works the
+# same whether invoked via `make`, an IDE, or `cmake` directly. Homebrew on
+# macOS never installs a bare `gcc`, so search versioned names too.
+if(NOT DEFINED CACHE{CMAKE_C_COMPILER})
+    find_program(SUMMA_GCC NAMES gcc-13 gcc-14 gcc-15 gcc-16 gcc)
+    if(SUMMA_GCC)
+        set(CMAKE_C_COMPILER ${SUMMA_GCC})
+    endif()
+endif()
+
 project(
     summa
     DESCRIPTION "A mega-repo of single-file C libraries"

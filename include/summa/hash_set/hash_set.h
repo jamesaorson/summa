@@ -6,10 +6,10 @@
 
 #pragma region Hash codes
 
-typedef unsigned long              SummaHashCodeMutable;
-typedef const SummaHashCodeMutable SummaHashCode;
+typedef unsigned long        SummaHashCodeMutable;
+typedef SummaHashCodeMutable SummaHashCode;
 
-SummaHashCode summa_hash(void* value, size_t size);
+SummaHashCode summa_hash(const void* value, const size_t size);
 
 #pragma endregion Hash codes
 
@@ -51,7 +51,7 @@ void         summa_hash_set_free(SummaHashSet set);
 
 #define _SUMMA_HASH_IMPL(hash, c) (hash) = (((hash) << 5) + (hash)) + (c) /* hash * 33 + c */
 
-SummaHashCode summa_hash(void* value, size_t size) {
+SummaHashCode summa_hash(const void* value, const size_t size) {
     SummaHashCodeMutable hash = _SUMMA_HASH_MAGIC;
 
     for (size_t i = 0; i < size; i++) {
