@@ -1,22 +1,28 @@
 #ifndef SUMMA_ARRAY_H
 #define SUMMA_ARRAY_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 typedef struct {
-    void*  value;
+    void*  elements;
     size_t length;
     size_t capacity;
     size_t element_size;
-} summa_array_t;
-typedef summa_array_t* SummaArray;
+} SummaArray_t;
+typedef SummaArray_t* SummaArray;
 
-SummaArray summa_array_make(const void* value, size_t num_elements, size_t element_size);
+SummaArray summa_array_make(const void* elements, size_t num_elements, size_t element_size);
 SummaArray summa_array_make_empty(size_t element_size);
 void       summa_array_clear(SummaArray str);
 bool       summa_array_copy(SummaArray dest, SummaArray src);
 bool       summa_array_copy_raw(SummaArray dest, void* raw, size_t len);
 void       summa_array_free(SummaArray arr);
+void       summa_array_push(SummaArray arr, void* element);
+bool       summa_array_contains(SummaArray arr, void* element);
+void       summa_array_remove_at(SummaArray arr, size_t index);
+bool       summa_array_index_of(SummaArray arr, void* element, size_t* out_index);
+void       summa_array_set_at(SummaArray arr, size_t index, void* element);
 
 #endif
 
@@ -24,25 +30,30 @@ void       summa_array_free(SummaArray arr);
 #ifndef SUMMA_ARRAY_IMPLEMENTATION_ONCE
 #define SUMMA_ARRAY_IMPLEMENTATION_ONCE
 
-SummaArray summa_array_make(const void* value, size_t num_elements, size_t element_size) {
-    SummaArray array = malloc(sizeof(summa_array_t));
-    array->value     = calloc(num_elements, element_size);
-    memcpy(array->value, value, num_elements * element_size);
+#define SUMMA_ARRAY_DEFAULT_CAPACITY 8
+
+SummaArray summa_array_make(const void* elements, size_t num_elements, size_t element_size) {
+    SummaArray array = malloc(sizeof(SummaArray_t));
+    array->elements  = calloc(num_elements, element_size);
+    memcpy(array->elements, elements, num_elements * element_size);
     array->capacity     = num_elements;
     array->length       = num_elements;
     array->element_size = element_size;
     return array;
 }
+
 SummaArray summa_array_make_empty(size_t element_size) {
-    SummaArray array    = malloc(sizeof(summa_array_t));
-    array->value        = nullptr;
-    array->capacity     = 0;
+    SummaArray array    = malloc(sizeof(SummaArray_t));
+    array->elements     = malloc(element_size * SUMMA_ARRAY_DEFAULT_CAPACITY);
+    array->capacity     = SUMMA_ARRAY_DEFAULT_CAPACITY;
     array->length       = 0;
     array->element_size = element_size;
     return array;
 }
 
-void summa_array_clear(SummaArray arr) { arr->length = 0; }
+void summa_array_clear(SummaArray arr) {
+    arr->length = 0;
+}
 
 bool summa_array_copy(SummaArray dest, SummaArray src) {
     if (dest->element_size != src->element_size) {
@@ -50,28 +61,129 @@ bool summa_array_copy(SummaArray dest, SummaArray src) {
     }
     size_t len = src->length;
     if (dest->capacity < len) {
-        dest->value    = realloc(dest->value, dest->element_size * (len + 1));
+        dest->elements = realloc(dest->elements, dest->element_size * (len + 1));
         dest->capacity = len + 1;
     }
-    memcpy(dest->value, src->value, dest->element_size * len);
+    memcpy(dest->elements, src->elements, dest->element_size * len);
     dest->length = len;
     return true;
 }
 
 bool summa_array_copy_raw(SummaArray dest, void* raw, size_t len) {
     if (dest->capacity < len) {
-        dest->value    = realloc(dest->value, dest->element_size * (len + 1));
+        dest->elements = realloc(dest->elements, dest->element_size * (len + 1));
         dest->capacity = len + 1;
     }
-    memcpy(dest->value, raw, dest->element_size * len);
+    memcpy(dest->elements, raw, dest->element_size * len);
     dest->length = len;
     return true;
 }
 
 void summa_array_free(SummaArray arr) {
-    free(arr->value);
+    free(arr->elements);
     free(arr);
 }
 
+void summa_array_push(SummaArray arr, void* element) {
+    if (arr->capacity == 0) {
+        arr->capacity = SUMMA_ARRAY_DEFAULT_CAPACITY;
+        arr->elements = realloc(arr->elements, arr->capacity * arr->element_size);
+    } else if (arr->length >= arr->capacity) {
+        arr->capacity *= 2;
+        arr->elements = realloc(arr->elements, arr->capacity * arr->element_size);
+    }
+    memcpy((char*)arr->elements + (arr->length * arr->element_size), element, arr->element_size);
+    arr->length++;
+}
+
+bool summa_array_contains(SummaArray arr, void* element) {
+    for (size_t i = 0; i < arr->length; i++) {
+        if (memcmp((char*)arr->elements + (i * arr->element_size), element, arr->element_size) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void summa_array_remove_at(SummaArray arr, size_t index) {
+    if (index >= arr->length) {
+        return;
+    }
+    size_t tail_count = arr->length - index - 1;
+    if (tail_count > 0) {
+        memmove((char*)arr->elements + (index * arr->element_size),
+                (char*)arr->elements + ((index + 1) * arr->element_size),
+                tail_count * arr->element_size);
+    }
+    arr->length--;
+}
+
+bool summa_array_index_of(SummaArray arr, void* element, size_t* out_index) {
+    for (size_t i = 0; i < arr->length; i++) {
+        if (memcmp((char*)arr->elements + (i * arr->element_size), element, arr->element_size) == 0) {
+            if (out_index) {
+                *out_index = i;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+void summa_array_set_at(SummaArray arr, size_t index, void* element) {
+    if (index >= arr->length) {
+        return;
+    }
+    memcpy((char*)arr->elements + (index * arr->element_size), element, arr->element_size);
+}
+
+#include <summa/macros/macros.h>
+
+#define SUMMA_ARRAY_GENERATE_TYPE_DEF(NewType, NewTypeNameForFunctions, ValueType) \
+    typedef struct {                                                               \
+        ValueType* value;                                                          \
+        size_t     length;                                                         \
+        size_t     capacity;                                                       \
+        size_t     element_size;                                                   \
+    } SUMMA_TOKEN_CONCAT2(NewType, _t);                                            \
+    typedef SUMMA_TOKEN_CONCAT2(NewType, _t) * NewType;
+
+#define SUMMA_ARRAY_GENERATE_TYPE_IMPL(NewType, NewTypeNameForFunctions, ValueType)                                  \
+    NewType SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _make)(ValueType * elements, size_t num_elements) { \
+        return (NewType)summa_array_make(elements, num_elements, sizeof(ValueType));                                 \
+    }                                                                                                                \
+    NewType SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _make_empty)() {                                    \
+        return (NewType)summa_array_make_empty(sizeof(ValueType));                                                   \
+    }                                                                                                                \
+    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _clear)(NewType arr) {                                 \
+        summa_array_clear((SummaArray)arr);                                                                          \
+    }                                                                                                                \
+    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _copy)(NewType dest, NewType src) {                    \
+        summa_array_copy((SummaArray)dest, (SummaArray)src);                                                         \
+    }                                                                                                                \
+    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _free)(NewType arr) {                                  \
+        summa_array_free((SummaArray)arr);                                                                           \
+    }                                                                                                                \
+    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _push)(NewType arr, ValueType * element) {             \
+        summa_array_push((SummaArray)arr, (void*)element);                                                           \
+    }                                                                                                                \
+    bool SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _contains)(NewType arr, ValueType * element) {         \
+        return summa_array_contains((SummaArray)arr, (void*)element);                                                \
+    }                                                                                                                \
+    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _remove_at)(NewType arr, size_t index) {               \
+        summa_array_remove_at((SummaArray)arr, index);                                                               \
+    }                                                                                                                \
+    bool SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _index_of)(                                            \
+        NewType arr, ValueType * element, size_t* out_index) {                                                       \
+        return summa_array_index_of((SummaArray)arr, (void*)element, out_index);                                     \
+    }                                                                                                                \
+    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _set_at)(                                              \
+        NewType arr, size_t index, ValueType* element) {                                                             \
+        summa_array_set_at((SummaArray)arr, index, (void*)element);                                                  \
+    }
+
+#define SUMMA_ARRAY_GENERATE_TYPE(NewType, NewTypeNameForFunctions, ValueType) \
+    SUMMA_ARRAY_GENERATE_TYPE_DEF(NewType, NewTypeNameForFunctions, ValueType) \
+    SUMMA_ARRAY_GENERATE_TYPE_IMPL(NewType, NewTypeNameForFunctions, ValueType)
 #endif /* SUMMA_ARRAY_IMPLEMENTATION_ONCE */
 #endif /* SUMMA_ARRAY_IMPLEMENTATION */

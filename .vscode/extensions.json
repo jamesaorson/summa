@@ -3,6 +3,8 @@
         "ms-vscode.cmake-tools",
         "ms-vscode.cpptools-extension-pack",
         "ms-vscode.makefile-tools",
-        "davidanson.vscode-markdownlint"
+        "davidanson.vscode-markdownlint",
+        "fredericbonnet.cmake-test-adapter",
+        "gruntfuggly.triggertaskonsave"
     ]
 }

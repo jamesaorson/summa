@@ -11,23 +11,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-void test_scheme_read() {
-    SummaSchemeExpression expression;
-    SummaSchemeError      error = summa_scheme_read("(define x 1)", &expression);
-    // TODO: Make this not fail
-    SUMMA_TEST_ASSERT(error.had);
-    SUMMA_TEST_ASSERT_EQ_STR("summa_scheme_read - NOT IMPLEMENTED", error.message);
-}
-
-void test_scheme_evaluate() {
-    SummaSchemeExpression expression = (SummaSchemeExpression){};
-    SummaSchemeValue      value;
-    SummaSchemeError      error = summa_scheme_evaluate(expression, &value);
-    // TODO: Make this not fail
-    SUMMA_TEST_ASSERT(error.had);
-    SUMMA_TEST_ASSERT_EQ_STR("summa_scheme_evaluate - NOT IMPLEMENTED", error.message);
-}
-
 void test_scheme_print_boolean() {
     SUMMA_TEST_SCOPED_FILE(f) {
         SummaSchemeValue value = summa_make_scheme_boolean(true);
@@ -88,7 +71,7 @@ void test_scheme_print_integer() {
 }
 
 void test_scheme_print_list() {
-    SummaList        nested    = summa_make_list_empty();
+    SummaList        nested    = summa_list_make_empty();
     SummaSchemeValue values[5] = {
         summa_make_scheme_boolean(true),
         summa_make_scheme_integer(420),
@@ -97,7 +80,7 @@ void test_scheme_print_list() {
         summa_make_scheme_boolean(false),
     };
     SUMMA_TEST_SCOPED_FILE(f) {
-        SummaList        list  = summa_make_list(values, sizeof(values) / sizeof(values[0]));
+        SummaList        list  = summa_list_make(values, sizeof(values) / sizeof(values[0]));
         SummaSchemeValue value = summa_make_scheme_list(list);
         SummaSchemeError error = summa_scheme_print(value, f.file);
         SUMMA_TEST_ASSERT(!error.had);
@@ -109,14 +92,43 @@ void test_scheme_print_list() {
 
 void test_scheme_print_procedure() {
     // TODO: Finish
+    SummaString           def_name     = summa_string_make("add2");
+    SummaSchemeSymbolList def_bindings = summa_symbol_list_make_empty();
+    SummaList             def_body     = summa_list_make_empty();
+    SummaSchemeValue      def          = summa_make_scheme_procedure(def_name, def_bindings, def_body);
+
+    summa_symbol_list_push(def_bindings, &(SummaSchemeSymbol){.value = summa_string_make("x")});
+    summa_symbol_list_push(def_bindings, &(SummaSchemeSymbol){.value = summa_string_make("y")});
+
+    SummaString           body_proc_name     = summa_string_make("+");
+    SummaSchemeSymbolList body_proc_bindings = summa_symbol_list_make_empty();
+    summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("x")});
+    summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("y")});
+    summa_list_push(def_body, &summa_make_scheme_procedure(body_proc_name, body_proc_bindings, nullptr));
+
     SUMMA_TEST_SCOPED_FILE(f) {
-        SummaSchemeValue value = summa_make_scheme_procedure((void*)nullptr);
-        SummaSchemeError error = summa_scheme_print(value, f.file);
-        SUMMA_TEST_ASSERT(error.had);
+        SummaSchemeError error = summa_scheme_print(def, f.file);
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT_FILE_EQ_STR(f, "#<procedure add2 (x y)>");
     }
+
+    for (size_t i = 0; i < body_proc_bindings->length; i++) {
+        summa_string_free(body_proc_bindings->value[i].value);
+    }
+    summa_symbol_list_free(body_proc_bindings);
+    summa_string_free(body_proc_name);
+    summa_list_free(def_body);
+
+    for (size_t i = 0; i < def_bindings->length; i++) {
+        summa_string_free(def_bindings->value[i].value);
+    }
+    summa_symbol_list_free(def_bindings);
+    summa_string_free(def_name);
 }
 
-#define HELLO_WORLD "hello world"
+#define HELLO "hello"
+#define WORLD "world"
+#define HELLO_WORLD HELLO " " WORLD
 
 void test_scheme_print_string() {
     SUMMA_TEST_SCOPED_FILE(f) {
@@ -129,27 +141,33 @@ void test_scheme_print_string() {
 }
 
 void test_scheme_print_symbol() {
-    // TODO: Finish, will be very hard
     SUMMA_TEST_SCOPED_FILE(f) {
-        SummaSchemeValue value = summa_make_scheme_symbol((void*)nullptr);
+        SummaSchemeValue value = summa_make_scheme_symbol(HELLO);
         SummaSchemeError error = summa_scheme_print(value, f.file);
-        SUMMA_TEST_ASSERT(error.had);
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT_FILE_EQ_STR(f, HELLO);
+        summa_string_free(value.value.symbol.value);
     }
 }
 
 void test_scheme_print_vector() {
-    // TODO: Finish
+    SummaSchemeValue values[2] = {
+        summa_make_scheme_integer(69),
+        summa_make_scheme_integer(420),
+    };
     SUMMA_TEST_SCOPED_FILE(f) {
-        SummaSchemeValue value = summa_make_scheme_vector((void*)nullptr);
-        SummaSchemeError error = summa_scheme_print(value, f.file);
-        SUMMA_TEST_ASSERT(error.had);
+        SummaList        vector = summa_list_make(values, sizeof(values) / sizeof(values[0]));
+        SummaSchemeValue value  = summa_make_scheme_vector(vector);
+        SummaSchemeError error  = summa_scheme_print(value, f.file);
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT_FILE_EQ_STR(f, "#(69 420)");
+        summa_list_free(vector);
     }
 }
 
-int main(void) {
-    summa_test_begin("scheme");
-    SUMMA_TEST_RUN(test_scheme_read);
-    SUMMA_TEST_RUN(test_scheme_evaluate);
+int main(int argc, char** argv) {
+    summa_test_begin("scheme.print", argc, argv);
+
     SUMMA_TEST_RUN(test_scheme_print_boolean);
     SUMMA_TEST_RUN(test_scheme_print_character);
     SUMMA_TEST_RUN(test_scheme_print_floating);
@@ -159,5 +177,6 @@ int main(void) {
     SUMMA_TEST_RUN(test_scheme_print_string);
     SUMMA_TEST_RUN(test_scheme_print_symbol);
     SUMMA_TEST_RUN(test_scheme_print_vector);
+
     return summa_test_end();
 }

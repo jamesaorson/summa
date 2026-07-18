@@ -109,7 +109,7 @@ Rules:
 
 ## Adding a Single-File Header Library
 
-Follow this checklist exactly — every library needs all four steps.
+Follow this checklist exactly — every library needs all three steps.
 
 ### 1. The header — `include/summa/<name>.h`
 
@@ -138,27 +138,21 @@ void test_name_something(void)
     SUMMA_TEST_ASSERT(/* ... */);
 }
 
-int main(void)
+int main(int argc, char** argv)
 {
-    summa_test_begin("name");
+    summa_test_begin("name", argc, argv);
     SUMMA_TEST_RUN(test_name_something);
     return summa_test_end();
 }
 ```
 
-### 3. Register the test — `tests/CMakeLists.txt`
+Nothing to register: `tests/CMakeLists.txt` globs `tests/*.test.c` and wires
+up each file automatically — the executable (`tests.<name>`, strict flags +
+ASan/UBSan via `summa_add_test()`), plus one CTest test per case
+(`<name>.<case>`, via `summa_discover_tests()` in
+`cmake/SummaTestDiscover.cmake`). Just drop the file in and build.
 
-```cmake
-add_executable(summa.tests.<name> <name>.test.c)
-target_link_libraries(summa.tests.<name> PRIVATE summa::summa)
-add_test(NAME summa.<name> COMMAND summa.tests.<name>)
-summa_add_test(summa.tests.<name>)   # strict flags + ASan/UBSan
-```
-
-`summa_add_test()` is already defined at the top of `tests/CMakeLists.txt`.
-Always call it — never skip it.
-
-### 4. Add an example — `examples/<name>/main.c` + `examples/CMakeLists.txt`
+### 3. Add an example — `examples/<name>/main.c` + `examples/CMakeLists.txt`
 
 Add `<name>` to the `ALL_EXAMPLES` list in `examples/CMakeLists.txt`, then
 write a minimal `examples/<name>/main.c` that shows idiomatic usage.
@@ -186,7 +180,8 @@ Guidelines:
 
 - Do not add third-party headers to `include/summa/`.
 - Do not `#include` non-standard headers inside a summa header.
-- Do not skip `summa_add_test()` on a test target.
+- Do not hand-add `add_executable`/`add_test` entries for a library test —
+  `tests/CMakeLists.txt` discovers `tests/*.test.c` automatically.
 - Do not commit without running `make check` (the pre-commit hook enforces this).
 - Do not open a PR without a linked issue (`Closes #N` in the description).
 - Do not merge your own PRs.

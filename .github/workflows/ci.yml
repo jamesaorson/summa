@@ -27,6 +27,11 @@ jobs:
         run: |
           make setup
 
+      - name: Check versions
+        run: |
+          clang-format --version
+          gcc-13 --version
+
       - name: Configure
         run: |
           make configure

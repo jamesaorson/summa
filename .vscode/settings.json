@@ -1,5 +1,22 @@
 {
     "files.associations": {
-        "*.h": "c"
-    }
+        "*.h": "c",
+        ".clang-format": "yaml"
+    },
+    "cmake.ctest.testExplorerIntegrationEnabled": false,
+    "cmakeExplorer.suiteDelimiter": ".",
+    "cmakeExplorer.testFileVar": "TEST_FILE",
+    "cmakeExplorer.testLineVar": "TEST_LINE",
+    "triggerTaskOnSave.on": true,
+    "triggerTaskOnSave.restart": true,
+    "triggerTaskOnSave.showNotifications": true,
+    "triggerTaskOnSave.tasks": {
+        "build": ["**/*.c", "**/*.h"]
+    },
+    "cSpell.words": [
+        "endforeach",
+        "endfunction",
+        "fsanitize",
+        "triggertaskonsave"
+    ]
 }
