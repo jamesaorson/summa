@@ -97,6 +97,14 @@ on the first failure.
 Called by assertion macros on failure. Can be overridden before
 `SUMMA_TEST_IMPLEMENTATION` is defined if custom failure handling is needed.
 
+Prints one GCC-style line per failure — `<file>:<line>: error: <expr>` (with
+`(<message>)` appended when the macro provides one). This is deliberate: it's
+the format editors and CTest-aware tooling already parse for file:line
+linking, e.g. VS Code's "CMake Test Explorer" extension matches it with its
+default `errorPattern` and places the diagnostic on the exact failing
+assertion (`__LINE__` at the `SUMMA_TEST_ASSERT*` call site), not just the
+enclosing test function.
+
 ## Types
 
 ### `summa_test_ctx_t`

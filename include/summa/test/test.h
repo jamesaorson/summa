@@ -173,12 +173,15 @@ int summa_test_end(void) {
     return summa_test_ctx.tests_failed > 0 ? 1 : 0;
 }
 
+/* GCC-style "file:line: error: message" — recognized as-is by editors and
+ * tools that link file:line references (including the default errorPattern
+ * in VS Code's "CMake Test Explorer" extension). */
 void summa_test_assert_fail(const summa_test_failure_t* f) {
     summa_test_ctx._assert_failed = 1;
-    printf("    ASSERT  %s  (%s:%d)", f->expr, f->file, f->line);
     if (f->message)
-        printf("\n    ->  %s", f->message);
-    printf("\n");
+        printf("%s:%d: error: %s (%s)\n", f->file, f->line, f->expr, f->message);
+    else
+        printf("%s:%d: error: %s\n", f->file, f->line, f->expr);
 }
 
 summa_test_file_t summa_test_file_open(void) {
