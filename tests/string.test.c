@@ -1,8 +1,8 @@
 #define SUMMA_TEST_IMPLEMENTATION
 #include <summa/test/test.h>
 
-#define SUMMA_SCHEME_IMPLEMENTATION
-#include <summa/scheme/scheme.h>
+#define SUMMA_STRING_IMPLEMENTATION
+#include <summa/string/string.h>
 
 #include <stdint.h>
 #include <stdlib.h>
