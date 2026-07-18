@@ -17,27 +17,21 @@ endfunction()
 
 include("${CMAKE_SOURCE_DIR}/cmake/SummaTestDiscover.cmake")
 
-add_executable(tests.array array.test.c)
-target_link_libraries(tests.array PRIVATE summa::summa)
-summa_discover_tests(tests.array TEST_PREFIX "array.")
-summa_add_test(tests.array)
+# Every tests/<name>.test.c becomes a tests.<name> executable, with one CTest
+# test per case (<name>.<case>, via summa_discover_tests). Drop a new
+# *.test.c file in this directory and it's picked up automatically — nothing
+# to edit here.
+file(GLOB test_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.test.c")
+list(SORT test_sources)
 
-add_executable(tests.string string.test.c)
-target_link_libraries(tests.string PRIVATE summa::summa)
-summa_discover_tests(tests.string TEST_PREFIX "string.")
-summa_add_test(tests.string)
+foreach(test_source ${test_sources})
+    get_filename_component(test_source_name "${test_source}" NAME)
+    string(REGEX REPLACE "\\.test\\.c$" "" test_name "${test_source_name}")
 
-add_executable(tests.scheme scheme.test.c)
-target_link_libraries(tests.scheme PRIVATE summa::summa)
-summa_discover_tests(tests.scheme TEST_PREFIX "scheme.")
-summa_add_test(tests.scheme)
+    set(target "tests.${test_name}")
 
-add_executable(tests.hash_set hash_set.test.c)
-target_link_libraries(tests.hash_set PRIVATE summa::summa)
-summa_discover_tests(tests.hash_set TEST_PREFIX "hash_set.")
-summa_add_test(tests.hash_set)
-
-add_executable(tests.hash_map hash_map.test.c)
-target_link_libraries(tests.hash_map PRIVATE summa::summa)
-summa_discover_tests(tests.hash_map TEST_PREFIX "hash_map.")
-summa_add_test(tests.hash_map)
+    add_executable(${target} "${test_source_name}")
+    target_link_libraries(${target} PRIVATE summa::summa)
+    summa_discover_tests(${target} TEST_PREFIX "${test_name}.")
+    summa_add_test(${target})
+endforeach()
