@@ -12,6 +12,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#define HELLO "hello"
+#define WORLD "world"
+#define HELLO_WORLD "hello world"
+
 void test_scheme_equals_boolean() {
     SummaSchemeValue* left;
     SummaSchemeValue* right;
@@ -108,7 +112,18 @@ void test_scheme_equals_list() {
 }
 
 void test_scheme_equals_procedure() {
-    SUMMA_TEST_TODO("Procedure equality test");
+    SummaSchemeValue* left;
+    SummaSchemeValue* right;
+
+    left  = &summa_make_scheme_procedure(summa_string_make("equal-check"), nullptr, nullptr);
+    right = &summa_make_scheme_procedure(summa_string_make("equal-check"), nullptr, nullptr);
+
+    SUMMA_TEST_ASSERT(summa_scheme_value_equals(left, right));
+
+    left  = &summa_make_scheme_procedure(summa_string_make("equal-check"), nullptr, nullptr);
+    right = &summa_make_scheme_procedure(summa_string_make("notequal-check"), nullptr, nullptr);
+
+    SUMMA_TEST_ASSERT(!summa_scheme_value_equals(left, right));
 }
 
 void test_scheme_equals_string() {
@@ -193,7 +208,7 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_scheme_equals_floating);
     SUMMA_TEST_RUN(test_scheme_equals_integer);
     SUMMA_TEST_RUN(test_scheme_equals_list);
-    // SUMMA_TEST_RUN(test_scheme_equals_procedure);
+    SUMMA_TEST_RUN(test_scheme_equals_procedure);
     SUMMA_TEST_RUN(test_scheme_equals_string);
     SUMMA_TEST_RUN(test_scheme_equals_symbol);
     SUMMA_TEST_RUN(test_scheme_equals_vector);

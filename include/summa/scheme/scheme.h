@@ -190,9 +190,7 @@ bool summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeVa
         return true;
     }
     case SummaSchemeProcedureType: {
-        // TODO: Implement SummaSchemeProcedureType equality check
-        assert(false);
-        break;
+        return summa_string_cmp(left->value.procedure.name, right->value.procedure.name) == 0;
     }
     case SummaSchemeStringType: {
         return summa_string_cmp(left->value.string.value, right->value.string.value) == 0;
