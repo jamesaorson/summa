@@ -113,7 +113,7 @@ void    summa_test_random_seed();
 double  summa_test_random_double_between(double min, double max);
 int64_t summa_test_random_integer_between(int64_t min, int64_t max);
 
-#define SUMMA_TEST_RUN(fn)                                                       \
+#define SUMMA_TEST_RUN(fn)                                                      \
     do {                                                                        \
         if (summa_test_ctx._list_mode) {                                        \
             printf("%s\n", #fn);                                                \
