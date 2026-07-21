@@ -193,6 +193,9 @@ SummaSchemeError summa_scheme_environment_get(const SummaSchemeEnvironment env,
                                               const SummaSchemeSymbol      symbol,
                                               SummaSchemeBinding*          out);
 
+SummaSchemeError
+summa_scheme_environment_get_string(const SummaSchemeEnvironment env, const SummaString str, SummaSchemeBinding* out);
+
 #pragma endregion Values
 
 #pragma region REPL
@@ -211,6 +214,8 @@ SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out);
 #define ERROR_MESSAGE_LENGTH 1024
 char ERROR_MESSAGE[ERROR_MESSAGE_LENGTH];
 
+SummaSchemeError summa_scheme_procedure_dispatch(SummaSchemeEnvironment env, SummaSchemeProcedure proc);
+
 SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment env,
                                    [[maybe_unused]] const char*                  inputText,
                                    [[maybe_unused]] SummaSchemeValue*            out) {
@@ -220,7 +225,8 @@ SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment
 SummaSchemeError summa_scheme_evaluate([[maybe_unused]] const SummaSchemeEnvironment env,
                                        const SummaSchemeValue                        in,
                                        SummaSchemeValue*                             out) {
-    // TODO: Check if the in value has been defined before. If so, return the SummaSchemeValue* of the global value.
+    // TODO: Check if the in value has been defined before. If so, return the SummaSchemeValue* of the global
+    // value.
     if (!out) {
         return summa_make_error("summa_scheme_evaluate - Out file was null");
     }
@@ -242,7 +248,13 @@ SummaSchemeError summa_scheme_evaluate([[maybe_unused]] const SummaSchemeEnviron
         return summa_scheme_value_copy(out, &in);
     } break;
     case SummaSchemeProcedureType: {
-        return summa_make_error("summa_scheme_evaluate - procedure - NOT IMPLEMENTED");
+        SummaSchemeProcedure in_proc = in.value.procedure;
+        SummaSchemeBinding   binding;
+        SummaSchemeError     err = summa_scheme_environment_get_string(env, in_proc.name, &binding);
+        if (err.had) {
+            return summa_make_error("unbound procedure");
+        }
+        return summa_scheme_procedure_dispatch(env, in_proc);
     } break;
     case SummaSchemeStringType: {
         *out = summa_make_scheme_string(in.value.string.value->value);
@@ -593,18 +605,70 @@ SummaSchemeError summa_scheme_environment_set(const SummaSchemeEnvironment env, 
 SummaSchemeError summa_scheme_environment_get(const SummaSchemeEnvironment env,
                                               const SummaSchemeSymbol      symbol,
                                               SummaSchemeBinding*          out) {
+    return summa_scheme_environment_get_string(env, symbol.value, out);
+}
+
+SummaSchemeError
+summa_scheme_environment_get_string(const SummaSchemeEnvironment env, const SummaString str, SummaSchemeBinding* out) {
     for (size_t i = 0; i < env->bindings->length; i++) {
         SummaSchemeBinding binding = env->bindings->value[i];
-        if (summa_string_cmp(binding.name, symbol.value) == 0) {
+        if (summa_string_cmp(binding.name, str) == 0) {
             *out = binding;
             return summa_success();
         }
     }
     if (env->parent) {
-        return summa_scheme_environment_get(env->parent, symbol, out);
+        return summa_scheme_environment_get_string(env->parent, str, out);
     }
-    snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "Unbound variable: %s", symbol.value->value);
+    snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "Unbound variable: %s", str->value);
     return summa_make_error(ERROR_MESSAGE);
+}
+
+SummaSchemeError summa_scheme_procedure_dispatch_global([[maybe_unused]] SummaSchemeEnvironment env,
+                                                        [[maybe_unused]] SummaSchemeProcedure   proc) {
+    bool             has_floating = false;
+    SummaSchemeValue values[proc.bindings->length];
+    for (size_t i = 0; i < proc.bindings->length; i++) {
+        // TODO: Bindings cannot be just symbols, but must be values...
+        SummaSchemeValue value = proc.bindings->value[i];
+        switch (value.type) {
+        case SummaSchemeFloatingType: {
+            has_floating = true;
+            values[i]    = value;
+        } break;
+        case SummaSchemeIntegerType: {
+            values[i] = value;
+        } break;
+        case SummaSchemeSymbolType: {
+            return summa_make_error("NOT IMPLEMENTED - Symbol for function application parameter");
+        }
+        default: {
+            return summa_make_error(
+                "NOT IMPLEMENTED - Only integer and floating point implemented for function application parameter");
+        }
+        }
+    }
+    if (has_floating) {
+        double result = 0.0;
+        for (size_t i = 0; i < proc.bindings->length; i++) {
+            result += 1.0; // TODO: Get value from binding rewrite
+        }
+    } else {
+        int result = 0;
+        for (size_t i = 0; i < proc.bindings->length; i++) {
+            result += 1; // TODO: Get value from binding rewrite
+        }
+    }
+
+    return summa_success();
+}
+
+SummaSchemeError summa_scheme_procedure_dispatch([[maybe_unused]] SummaSchemeEnvironment env,
+                                                 SummaSchemeProcedure                    proc) {
+    if (!proc.body) {
+        return summa_scheme_procedure_dispatch_global(env, proc);
+    }
+    return summa_make_error("NOT IMPLEMENTED - user-defined procedures");
 }
 
 #endif
