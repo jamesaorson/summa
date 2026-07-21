@@ -249,16 +249,23 @@ SummaSchemeError summa_scheme_evaluate([[maybe_unused]] const SummaSchemeEnviron
     } break;
     case SummaSchemeSymbolType: {
         SummaSchemeBinding binding;
-        SummaSchemeValue   symbol = summa_make_scheme_symbol(in.value.string.value->value);
-        SummaSchemeError   err    = summa_scheme_environment_get(env, symbol.value.symbol, &binding);
+        SummaSchemeError   err = summa_scheme_environment_get(env, in.value.symbol, &binding);
         if (err.had) {
-            binding.name  = symbol.value.symbol.value;
-            binding.value = symbol;
-            summa_scheme_environment_set(env, binding);
-            *out = symbol;
-        } else {
-            *out = binding.value;
+            /* Unbound, so the symbol evaluates to itself and is interned into
+             * the environment on the way out.
+             *
+             * The name, the symbol bound to it, and the one returned are three
+             * separate strings on purpose -- the same reason the global `+`
+             * binding builds two. The environment frees a binding's value and
+             * its name independently, and the caller frees what it gets back,
+             * so any handle shared between those would be released twice. */
+            const char* name = in.value.symbol.value->value;
+            summa_scheme_environment_set(
+                env, summa_scheme_binding_make(summa_string_make(name), summa_make_scheme_symbol(name)));
         }
+        /* Either branch hands back a copy the caller owns: the binding's value
+         * stays the environment's. */
+        return summa_scheme_value_copy(out, err.had ? &in : &binding.value);
     } break;
     case SummaSchemeVectorType: {
         return summa_scheme_value_copy(out, &in);
