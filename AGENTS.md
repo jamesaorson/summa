@@ -152,6 +152,64 @@ ASan/UBSan via `summa_add_test()`), plus one CTest test per case
 (`<name>.<case>`, via `summa_discover_tests()` in
 `cmake/SummaTestDiscover.cmake`). Just drop the file in and build.
 
+#### Scope every allocation
+
+**Anything a test allocates gets released by a scope, not by a trailing
+`free`.** Use `SUMMA_TEST_SCOPED_VALUE(T, var, init, destroy)` — it binds `var`
+for one block and hands it to `destroy` on the way out:
+
+```c
+SUMMA_TEST_SCOPED_VALUE(SummaString, str, summa_string_make("hi"), summa_string_free) {
+    SUMMA_TEST_ASSERT_EQ_STR("hi", str->value);
+}
+```
+
+Give each file a one-line alias so the type and destructor aren't repeated at
+every call site, then nest scopes for multiple values — inner ones are destroyed
+first:
+
+```c
+#define SCOPED_STRING(var, init) SUMMA_TEST_SCOPED_VALUE(SummaString, var, init, summa_string_free)
+
+SCOPED_STRING(dest, summa_string_make("x"))
+SCOPED_STRING(src, summa_string_make("hello world")) {
+    summa_string_copy(dest, src);
+}
+```
+
+When a type owns things its own `_free` doesn't reach, write a small `static`
+destructor next to the alias and scope against that, rather than open-coding the
+teardown at each site:
+
+```c
+static void free_symbol_list(SummaSchemeSymbolList symbols) {
+    for (size_t i = 0; i < symbols->length; i++) {
+        summa_string_free(symbols->value[i].value);
+    }
+    summa_symbol_list_free(symbols);
+}
+```
+
+Why it matters: cleanup can't drift away from the allocation, a new early exit
+can't skip it, and a failing assertion still releases (assertions record and
+continue rather than unwinding). Two limits worth knowing — `return` and `break`
+out of the block *do* skip the cleanup, so let blocks end normally; and a value
+filled in through an output parameter wasn't made by the scope, so those stay
+manual. If a manual `free` is genuinely unavoidable, say why in a comment.
+
+`SUMMA_TEST_SCOPED_FILE(f)` is the same idea for a captured `FILE*`.
+
+#### Checking for leaks locally
+
+CI runs ASan/UBSan on Linux, but the sanitizers are **switched off for GCC on
+macOS** (`tests/CMakeLists.txt`), and LeakSanitizer doesn't run on Darwin at
+all — so a leak introduced locally will not fail `make test`. Use `leaks`
+instead:
+
+```sh
+leaks --atExit -- ./build/debug/tests/tests.<name>
+```
+
 ### 3. Add an example — `examples/<name>/main.c` + `examples/CMakeLists.txt`
 
 Add `<name>` to the `ALL_EXAMPLES` list in `examples/CMakeLists.txt`, then
