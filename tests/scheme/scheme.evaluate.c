@@ -23,15 +23,43 @@ static void free_global_env(SummaSchemeEnvironment env) {
     summa_binding_list_free(env->bindings);
 }
 
+/* summa_scheme_environment_make_global is an assignment macro that evaluates to
+ * void, so it can't be a SCOPED_VALUE initializer. This does the same two steps
+ * as an expression. Note the environment itself is a compound literal with
+ * automatic storage duration, so it must be built in the scope that uses it --
+ * which is exactly where the macro expansion puts it -- and never returned from
+ * a helper. */
+static SummaSchemeEnvironment init_global_env(SummaSchemeEnvironment env) {
+    summa_scheme_environment_init_global(env);
+    return env;
+}
+
+#define SCOPED_GLOBAL_ENV(var) \
+    SUMMA_TEST_SCOPED_VALUE(   \
+        SummaSchemeEnvironment, var, init_global_env(summa_scheme_environment_make_empty()), free_global_env)
+
+#define SCOPED_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaList, var, init, summa_list_free)
+#define SCOPED_STRING(var, init) SUMMA_TEST_SCOPED_VALUE(SummaString, var, init, summa_string_free)
+
+/* A symbol list owns the string inside each symbol, which summa_symbol_list_free
+ * doesn't know about -- so the destructor drains them first. */
+static void free_symbol_list(SummaSchemeSymbolList symbols) {
+    for (size_t i = 0; i < symbols->length; i++) {
+        summa_string_free(symbols->value[i].value);
+    }
+    summa_symbol_list_free(symbols);
+}
+
+#define SCOPED_SYMBOL_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaSchemeSymbolList, var, init, free_symbol_list)
+
 void test_scheme_evaluate_boolean() {
-    SummaSchemeEnvironment env;
-    summa_scheme_environment_make_global(env);
-    SummaSchemeValue in = summa_make_scheme_boolean(true);
-    SummaSchemeValue out;
-    SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
-    SUMMA_TEST_ASSERT(!error.had);
-    SUMMA_TEST_ASSERT_EQ(out.value.boolean.value, true);
-    free_global_env(env);
+    SCOPED_GLOBAL_ENV(env) {
+        SummaSchemeValue in = summa_make_scheme_boolean(true);
+        SummaSchemeValue out;
+        SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT_EQ(out.value.boolean.value, true);
+    }
 }
 
 void test_scheme_evaluate_character() {
@@ -39,13 +67,12 @@ void test_scheme_evaluate_character() {
     SummaSchemeValue out;
     SummaSchemeError error;
     for (int c = 0; c < 256; c++) {
-        SummaSchemeEnvironment env;
-        summa_scheme_environment_make_global(env);
-        in    = summa_make_scheme_character((char)c);
-        error = summa_scheme_evaluate(env, in, &out);
-        SUMMA_TEST_ASSERT(!error.had);
-        SUMMA_TEST_ASSERT_EQ(out.value.character.value, (char)c);
-        free_global_env(env);
+        SCOPED_GLOBAL_ENV(env) {
+            in    = summa_make_scheme_character((char)c);
+            error = summa_scheme_evaluate(env, in, &out);
+            SUMMA_TEST_ASSERT(!error.had);
+            SUMMA_TEST_ASSERT_EQ(out.value.character.value, (char)c);
+        }
     }
 }
 
@@ -58,16 +85,15 @@ void test_scheme_evaluate_floating() {
     SummaSchemeError error;
 
     for (int i = 0; i < NUM_RANDOM_CASES; i++) {
-        SummaSchemeEnvironment env;
-        summa_scheme_environment_make_global(env);
-        double value = summa_test_random_double_between(-1 * 1000 * 1000 * 1000, 1 * 1000 * 1000 * 1000);
-        in           = summa_make_scheme_floating(value);
-        error        = summa_scheme_evaluate(env, in, &out);
+        SCOPED_GLOBAL_ENV(env) {
+            double value = summa_test_random_double_between(-1 * 1000 * 1000 * 1000, 1 * 1000 * 1000 * 1000);
+            in           = summa_make_scheme_floating(value);
+            error        = summa_scheme_evaluate(env, in, &out);
 
-        SUMMA_TEST_ASSERT(!error.had);
-        SUMMA_TEST_ASSERT_EQ(out.value.floating.value, value);
-        SUMMA_TEST_ASSERT_NEQ(out.value.floating.value, value = 0.0001);
-        free_global_env(env);
+            SUMMA_TEST_ASSERT(!error.had);
+            SUMMA_TEST_ASSERT_EQ(out.value.floating.value, value);
+            SUMMA_TEST_ASSERT_NEQ(out.value.floating.value, value = 0.0001);
+        }
     }
 }
 
@@ -78,67 +104,57 @@ void test_scheme_evaluate_integer() {
     SummaSchemeError error;
 
     for (int i = 0; i < NUM_RANDOM_CASES; i++) {
-        SummaSchemeEnvironment env;
-        summa_scheme_environment_make_global(env);
-        int value = summa_test_random_integer_between(INT64_MIN, INT64_MAX);
-        in        = summa_make_scheme_integer(value);
-        error     = summa_scheme_evaluate(env, in, &out);
+        SCOPED_GLOBAL_ENV(env) {
+            int value = summa_test_random_integer_between(INT64_MIN, INT64_MAX);
+            in        = summa_make_scheme_integer(value);
+            error     = summa_scheme_evaluate(env, in, &out);
 
-        SUMMA_TEST_ASSERT(!error.had);
-        SUMMA_TEST_ASSERT_EQ(out.value.integer.value, value);
-        SUMMA_TEST_ASSERT_NEQ(out.value.integer.value, value + 1);
-        free_global_env(env);
+            SUMMA_TEST_ASSERT(!error.had);
+            SUMMA_TEST_ASSERT_EQ(out.value.integer.value, value);
+            SUMMA_TEST_ASSERT_NEQ(out.value.integer.value, value + 1);
+        }
     }
 }
 
 void test_scheme_evaluate_list() {
-    SummaSchemeEnvironment env;
-    summa_scheme_environment_make_global(env);
-    SummaSchemeValue in;
-    SummaSchemeValue out;
+    SCOPED_GLOBAL_ENV(env)
+    SCOPED_LIST(nested, summa_list_make_empty()) {
+        SummaSchemeValue values[5] = {
+            summa_make_scheme_boolean(true),
+            summa_make_scheme_integer(420),
+            summa_make_scheme_floating(3.14),
+            summa_make_scheme_list(nested),
+            summa_make_scheme_boolean(false),
+        };
+        SCOPED_LIST(list, summa_list_make(values, sizeof(values) / sizeof(values[0]))) {
+            SummaSchemeValue in    = summa_make_scheme_list(list);
+            SummaSchemeValue out   = {};
+            SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
 
-    SummaList        nested    = summa_list_make_empty();
-    SummaSchemeValue values[5] = {
-        summa_make_scheme_boolean(true),
-        summa_make_scheme_integer(420),
-        summa_make_scheme_floating(3.14),
-        summa_make_scheme_list(nested),
-        summa_make_scheme_boolean(false),
-    };
-    SummaList list         = summa_list_make(values, sizeof(values) / sizeof(values[0]));
-    in                     = summa_make_scheme_list(list);
-    SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
+            SUMMA_TEST_ASSERT(!error.had);
+            SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
 
-    SUMMA_TEST_ASSERT(!error.had);
-    SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
-
-    summa_list_free(out.value.list.value);
-    summa_list_free(list);
-    summa_list_free(nested);
-    free_global_env(env);
+            /* `out` is an output parameter rather than something this scope
+             * made, so its inner list is still freed by hand. */
+            summa_list_free(out.value.list.value);
+        }
+    }
 }
 
 void test_scheme_evaluate_procedure() {
-    SummaSchemeEnvironment env;
-    summa_scheme_environment_make_global(env);
-    SummaString           body_proc_name     = summa_string_make("+");
-    SummaSchemeSymbolList body_proc_bindings = summa_symbol_list_make_empty();
-    summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("x")});
-    summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("y")});
+    SCOPED_GLOBAL_ENV(env)
+    SCOPED_STRING(body_proc_name, summa_string_make("+"))
+    SCOPED_SYMBOL_LIST(body_proc_bindings, summa_symbol_list_make_empty()) {
+        summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("x")});
+        summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("y")});
 
-    SummaSchemeValue in = summa_make_scheme_procedure(body_proc_name, body_proc_bindings, nullptr);
-    SummaSchemeValue out;
-    SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
+        SummaSchemeValue in = summa_make_scheme_procedure(body_proc_name, body_proc_bindings, nullptr);
+        SummaSchemeValue out;
+        SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
 
-    // TODO: Make this not fail
-    SUMMA_TEST_ASSERT(error.had);
-
-    for (size_t i = 0; i < body_proc_bindings->length; i++) {
-        summa_string_free(body_proc_bindings->value[i].value);
+        // TODO: Make this not fail
+        SUMMA_TEST_ASSERT(error.had);
     }
-    summa_symbol_list_free(body_proc_bindings);
-    summa_string_free(body_proc_name);
-    free_global_env(env);
 }
 
 #define HELLO "hello"
@@ -146,55 +162,50 @@ void test_scheme_evaluate_procedure() {
 #define HELLO_WORLD HELLO " " WORLD
 
 void test_scheme_evaluate_string() {
-    SummaSchemeEnvironment env;
-    summa_scheme_environment_make_global(env);
-    SummaSchemeValue in = summa_make_scheme_string(HELLO_WORLD);
-    SummaSchemeValue out;
-    SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
+    SCOPED_GLOBAL_ENV(env) {
+        SummaSchemeValue in = summa_make_scheme_string(HELLO_WORLD);
+        SummaSchemeValue out;
+        SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
 
-    SUMMA_TEST_ASSERT(!error.had);
-    SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
 
-    summa_string_free(in.value.string.value);
-    summa_string_free(out.value.string.value);
-    free_global_env(env);
+        summa_string_free(in.value.string.value);
+        summa_string_free(out.value.string.value);
+    }
 }
 
 void test_scheme_evaluate_symbol() {
-    SummaSchemeEnvironment env;
-    summa_scheme_environment_make_global(env);
-    SummaSchemeValue in = summa_make_scheme_symbol(HELLO);
-    SummaSchemeValue out;
-    SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
+    SCOPED_GLOBAL_ENV(env) {
+        SummaSchemeValue in = summa_make_scheme_symbol(HELLO);
+        SummaSchemeValue out;
+        SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
 
-    SUMMA_TEST_ASSERT(!error.had);
-    SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
 
-    summa_string_free(in.value.symbol.value);
-    summa_string_free(out.value.symbol.value);
-    free_global_env(env);
+        summa_string_free(in.value.symbol.value);
+        summa_string_free(out.value.symbol.value);
+    }
 }
 
 void test_scheme_evaluate_vector() {
-    SummaSchemeEnvironment env;
-    summa_scheme_environment_make_global(env);
-    SummaSchemeValue in;
-    SummaSchemeValue out;
+    SCOPED_GLOBAL_ENV(env) {
+        SummaSchemeValue values[2] = {
+            summa_make_scheme_floating(3.14),
+            summa_make_scheme_floating(420.69),
+        };
+        SCOPED_LIST(vector, summa_list_make(values, sizeof(values) / sizeof(values[0]))) {
+            SummaSchemeValue in    = summa_make_scheme_vector(vector);
+            SummaSchemeValue out   = {};
+            SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
 
-    SummaSchemeValue values[2] = {
-        summa_make_scheme_floating(3.14),
-        summa_make_scheme_floating(420.69),
-    };
-    SummaList vector       = summa_list_make(values, sizeof(values) / sizeof(values[0]));
-    in                     = summa_make_scheme_vector(vector);
-    SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
+            SUMMA_TEST_ASSERT(!error.had);
+            SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
 
-    SUMMA_TEST_ASSERT(!error.had);
-    SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
-
-    summa_list_free(out.value.vector.value);
-    summa_list_free(vector);
-    free_global_env(env);
+            summa_list_free(out.value.vector.value);
+        }
+    }
 }
 
 int main(int argc, char** argv) {
