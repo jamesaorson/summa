@@ -201,6 +201,15 @@ void summa_test_thread_join(summa_test_thread_t* thread);
 summa_test_ctx_t summa_test_ctx;
 
 void summa_test_begin(const char* suite_name, int argc, char** argv) {
+    /* Line-buffer stdout before anything is written to it. A pipe -- which is
+     * what ctest hands the binary -- would otherwise make stdout fully
+     * buffered and flush the whole transcript at exit, while stderr stays
+     * unbuffered. Anything a test logs to stderr then lands ahead of every
+     * line this framework printed, and the captured output reads out of order.
+     * On a terminal stdout is already line-buffered, so this changes nothing
+     * interactively. */
+    setvbuf(stdout, nullptr, _IOLBF, 0);
+
     summa_test_ctx = (summa_test_ctx_t){
         .suite          = suite_name,
         .tests_passed   = 0,
