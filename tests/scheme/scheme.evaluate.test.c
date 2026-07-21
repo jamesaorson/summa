@@ -31,6 +31,27 @@ static void free_symbol_list(SummaSchemeSymbolList symbols) {
 
 #define SCOPED_SYMBOL_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaSchemeSymbolList, var, init, free_symbol_list)
 
+/* A form owns every value pushed into it, and summa_scheme_value_free is
+ * deliberately shallow -- so nested forms are drained here rather than losing
+ * the strings their head symbols carry. */
+static void free_form(SummaList form) {
+    for (size_t i = 0; i < form->length; i++) {
+        SummaSchemeValue* value = &form->value[i];
+        if (value->type == SummaSchemeListType) {
+            free_form(value->value.list.value);
+        } else {
+            summa_scheme_value_free(value);
+        }
+    }
+    summa_list_free(form);
+}
+
+#define SCOPED_FORM(var, init) SUMMA_TEST_SCOPED_VALUE(SummaList, var, init, free_form)
+
+#define HELLO "hello"
+#define WORLD "world"
+#define HELLO_WORLD HELLO " " WORLD
+
 void test_scheme_evaluate_boolean() {
     SCOPED_GLOBAL_ENV(env) {
         SummaSchemeValue in = summa_make_scheme_boolean(true);
@@ -120,6 +141,8 @@ void test_scheme_evaluate_list() {
     }
 }
 
+/* A procedure value is self-evaluating: applying one needs a call site to
+ * supply the arguments, which a bare value is not. */
 void test_scheme_evaluate_procedure() {
     SCOPED_GLOBAL_ENV(env)
     SCOPED_STRING(body_proc_name, summa_string_make("+"))
@@ -127,18 +150,131 @@ void test_scheme_evaluate_procedure() {
         summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("x")});
         summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("y")});
 
-        SummaSchemeValue in = summa_make_scheme_procedure(body_proc_name, body_proc_bindings, nullptr);
-        SummaSchemeValue out;
+        SummaSchemeValue in    = summa_make_scheme_procedure(body_proc_name, body_proc_bindings, nullptr);
+        SummaSchemeValue out   = {};
         SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
 
-        // TODO: Make this not fail
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT_EQ(SummaSchemeProcedureType, out.type);
+        SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
+        /* The copy's bindings share the original's strings, so only what the
+         * copy allocated for itself is released here. */
+        SUMMA_TEST_ASSERT_NEQ(in.value.procedure.bindings, out.value.procedure.bindings);
+        summa_string_free(out.value.procedure.name);
+        summa_symbol_list_free(out.value.procedure.bindings);
+    }
+}
+
+/* Application: the head of the form names the procedure, and everything after
+ * it is evaluated into the arguments the call is dispatched with. */
+void test_scheme_evaluate_application_integer() {
+    SCOPED_GLOBAL_ENV(env)
+    SCOPED_FORM(form, summa_list_make_empty()) {
+        summa_list_push(form, &summa_make_scheme_symbol("+"));
+        summa_list_push(form, &summa_make_scheme_integer(1));
+        summa_list_push(form, &summa_make_scheme_integer(2));
+        summa_list_push(form, &summa_make_scheme_integer(3));
+
+        SummaSchemeValue in    = summa_make_scheme_list(form);
+        SummaSchemeValue out   = {};
+        SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
+
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT_EQ(SummaSchemeIntegerType, out.type);
+        SUMMA_TEST_ASSERT_EQ(6, out.value.integer.value);
+    }
+}
+
+/* One floating argument makes the whole sum floating. */
+void test_scheme_evaluate_application_floating() {
+    SCOPED_GLOBAL_ENV(env)
+    SCOPED_FORM(form, summa_list_make_empty()) {
+        summa_list_push(form, &summa_make_scheme_symbol("+"));
+        summa_list_push(form, &summa_make_scheme_integer(1));
+        summa_list_push(form, &summa_make_scheme_floating(2.5));
+
+        SummaSchemeValue in    = summa_make_scheme_list(form);
+        SummaSchemeValue out   = {};
+        SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
+
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT_EQ(SummaSchemeFloatingType, out.type);
+        SUMMA_TEST_ASSERT_EQ(3.5, out.value.floating.value);
+    }
+}
+
+void test_scheme_evaluate_application_no_arguments() {
+    SCOPED_GLOBAL_ENV(env)
+    SCOPED_FORM(form, summa_list_make_empty()) {
+        summa_list_push(form, &summa_make_scheme_symbol("+"));
+
+        SummaSchemeValue in    = summa_make_scheme_list(form);
+        SummaSchemeValue out   = {};
+        SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
+
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT_EQ(SummaSchemeIntegerType, out.type);
+        SUMMA_TEST_ASSERT_EQ(0, out.value.integer.value);
+    }
+}
+
+/* Arguments are evaluated before the call, so a nested application is just
+ * another operand by the time `+` sees it. */
+void test_scheme_evaluate_application_nested() {
+    SCOPED_GLOBAL_ENV(env)
+    SCOPED_FORM(form, summa_list_make_empty()) {
+        SummaList inner = summa_list_make_empty();
+        summa_list_push(inner, &summa_make_scheme_symbol("+"));
+        summa_list_push(inner, &summa_make_scheme_integer(2));
+        summa_list_push(inner, &summa_make_scheme_integer(3));
+
+        summa_list_push(form, &summa_make_scheme_symbol("+"));
+        summa_list_push(form, &summa_make_scheme_integer(1));
+        summa_list_push(form, &summa_make_scheme_list(inner));
+
+        SummaSchemeValue in    = summa_make_scheme_list(form);
+        SummaSchemeValue out   = {};
+        SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
+
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT_EQ(SummaSchemeIntegerType, out.type);
+        SUMMA_TEST_ASSERT_EQ(6, out.value.integer.value);
+    }
+}
+
+void test_scheme_evaluate_application_non_numeric_argument() {
+    SCOPED_GLOBAL_ENV(env)
+    SCOPED_FORM(form, summa_list_make_empty()) {
+        summa_list_push(form, &summa_make_scheme_symbol("+"));
+        summa_list_push(form, &summa_make_scheme_integer(1));
+        summa_list_push(form, &summa_make_scheme_string(HELLO));
+
+        SummaSchemeValue in    = summa_make_scheme_list(form);
+        SummaSchemeValue out   = {};
+        SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
+
         SUMMA_TEST_ASSERT(error.had);
     }
 }
 
-#define HELLO "hello"
-#define WORLD "world"
-#define HELLO_WORLD HELLO " " WORLD
+/* A list whose head is not a bound procedure is data, not a call. */
+void test_scheme_evaluate_application_unbound_head() {
+    SCOPED_GLOBAL_ENV(env)
+    SCOPED_FORM(form, summa_list_make_empty()) {
+        summa_list_push(form, &summa_make_scheme_symbol(WORLD));
+        summa_list_push(form, &summa_make_scheme_integer(1));
+
+        SummaSchemeValue in    = summa_make_scheme_list(form);
+        SummaSchemeValue out   = {};
+        SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
+
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT_EQ(SummaSchemeListType, out.type);
+        SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
+
+        summa_list_free(out.value.list.value);
+    }
+}
 
 void test_scheme_evaluate_string() {
     SCOPED_GLOBAL_ENV(env) {
@@ -196,6 +332,12 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_scheme_evaluate_integer);
     SUMMA_TEST_RUN(test_scheme_evaluate_list);
     SUMMA_TEST_RUN(test_scheme_evaluate_procedure);
+    SUMMA_TEST_RUN(test_scheme_evaluate_application_integer);
+    SUMMA_TEST_RUN(test_scheme_evaluate_application_floating);
+    SUMMA_TEST_RUN(test_scheme_evaluate_application_no_arguments);
+    SUMMA_TEST_RUN(test_scheme_evaluate_application_nested);
+    SUMMA_TEST_RUN(test_scheme_evaluate_application_non_numeric_argument);
+    SUMMA_TEST_RUN(test_scheme_evaluate_application_unbound_head);
     SUMMA_TEST_RUN(test_scheme_evaluate_string);
     SUMMA_TEST_RUN(test_scheme_evaluate_symbol);
     SUMMA_TEST_RUN(test_scheme_evaluate_vector);
