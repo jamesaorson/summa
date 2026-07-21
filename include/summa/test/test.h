@@ -93,6 +93,31 @@ size_t            summa_test_file_read(summa_test_file_t* tf, char* buf, size_t 
     for (summa_test_file_t var = summa_test_file_open(), *_summa_scope_##var = &var; _summa_scope_##var != nullptr; \
          summa_test_file_close(&var), _summa_scope_##var                     = nullptr)
 
+/* Binds `var` of type `T` to `init` for one block, then hands it to `destroy`
+ * when the block exits — the generic form of SUMMA_TEST_SCOPED_FILE, for any
+ * summa type with a make/free pair:
+ *
+ *     SUMMA_TEST_SCOPED_VALUE(SummaString, str, summa_string_make("hi"), summa_string_free) {
+ *         SUMMA_TEST_ASSERT_EQ_STR("hi", str->value);
+ *     }
+ *
+ * `destroy` receives the value itself, not its address, which is what the
+ * summa_*_free functions already take. Scopes nest, and inner values are
+ * destroyed before outer ones:
+ *
+ *     SUMMA_TEST_SCOPED_VALUE(SummaString, a, summa_string_make("a"), summa_string_free)
+ *     SUMMA_TEST_SCOPED_VALUE(SummaString, b, summa_string_make("b"), summa_string_free) {
+ *         ...
+ *     }
+ *
+ * A failing assertion inside the block does not skip the cleanup — assertions
+ * record and continue rather than unwinding. `return` out of the block does
+ * skip it, and so does `break`, since neither reaches the loop's third clause;
+ * let the block end normally. */
+#define SUMMA_TEST_SCOPED_VALUE(T, var, init, destroy)                              \
+    for (T var = (init), *_summa_scope_##var = &var; _summa_scope_##var != nullptr; \
+         (destroy)(var), _summa_scope_##var  = nullptr)
+
 /* Asserts everything written to `tf` since it was opened (or last asserted on)
  * equals `expected`, then drains the capture. */
 #define SUMMA_TEST_ASSERT_FILE_EQ_STR(tf, expected)      \
