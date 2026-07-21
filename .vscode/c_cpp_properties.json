@@ -10,6 +10,7 @@
                 "SUMMA_ARRAY_IMPLEMENTATION",
                 "SUMMA_HASH_MAP_IMPLEMENTATION",
                 "SUMMA_HASH_SET_IMPLEMENTATION",
+                "SUMMA_REF_COUNT_IMPLEMENTATION",
                 "SUMMA_SCHEME_IMPLEMENTATION",
                 "SUMMA_STRING_IMPLEMENTATION"
             ],
@@ -31,6 +32,7 @@
                 "SUMMA_ARRAY_IMPLEMENTATION",
                 "SUMMA_HASH_MAP_IMPLEMENTATION",
                 "SUMMA_HASH_SET_IMPLEMENTATION",
+                "SUMMA_REF_COUNT_IMPLEMENTATION",
                 "SUMMA_SCHEME_IMPLEMENTATION",
                 "SUMMA_STRING_IMPLEMENTATION"
             ],

@@ -30,6 +30,11 @@ endfunction()
 
 include("${CMAKE_SOURCE_DIR}/cmake/SummaTestDiscover.cmake")
 
+# Concurrency tests spawn threads through <threads.h> where the platform has it
+# (glibc) and <pthread.h> where it doesn't (macOS). Threads::Threads supplies
+# whichever link flag that needs; targets with no threaded case ignore it.
+find_package(Threads REQUIRED)
+
 # Every *.c file anywhere under tests/ (including nested folders, e.g.
 # tests/scheme/scheme.equals.c) becomes a tests.<name> executable, with one
 # CTest test per case (<name>.<case>, via summa_discover_tests). A top-level
@@ -47,7 +52,7 @@ foreach(test_source ${test_sources})
     set(target "tests.${test_name}")
 
     add_executable(${target} "${test_source}")
-    target_link_libraries(${target} PRIVATE summa::summa)
+    target_link_libraries(${target} PRIVATE summa::summa Threads::Threads)
     summa_discover_tests(${target} TEST_PREFIX "${test_name}." SOURCE_FILE "${test_source}")
     summa_add_test(${target})
 endforeach()

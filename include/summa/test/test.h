@@ -113,6 +113,38 @@ void    summa_test_random_seed();
 double  summa_test_random_double_between(double min, double max);
 int64_t summa_test_random_integer_between(int64_t min, int64_t max);
 
+/* Spawn/join shim for threaded test cases. C11 <threads.h> is the preferred
+ * path and is used wherever the platform ships it (glibc); macOS does not, so
+ * it falls back to POSIX <pthread.h>. Both need a link flag, which
+ * tests/CMakeLists.txt supplies to every test target via Threads::Threads.
+ *
+ * A thread body is written against the two macros rather than a fixed
+ * signature, since the two backends disagree on the return type:
+ *
+ *     static SUMMA_TEST_THREAD_RESULT worker(void* arg) {
+ *         ...
+ *         return SUMMA_TEST_THREAD_DONE;
+ *     }
+ */
+#if __has_include(<threads.h>)
+#define SUMMA_TEST_C11_THREADS 1
+#include <threads.h>
+typedef thrd_t summa_test_thread_t;
+#define SUMMA_TEST_THREAD_RESULT int
+#define SUMMA_TEST_THREAD_DONE 0
+#else
+#define SUMMA_TEST_C11_THREADS 0
+#include <pthread.h>
+typedef pthread_t summa_test_thread_t;
+#define SUMMA_TEST_THREAD_RESULT void*
+#define SUMMA_TEST_THREAD_DONE nullptr
+#endif
+
+typedef SUMMA_TEST_THREAD_RESULT (*summa_test_thread_fn)(void*);
+
+void summa_test_thread_start(summa_test_thread_t* thread, summa_test_thread_fn fn, void* arg);
+void summa_test_thread_join(summa_test_thread_t* thread);
+
 #define SUMMA_TEST_RUN(fn)                                                      \
     do {                                                                        \
         if (summa_test_ctx._list_mode) {                                        \
@@ -226,6 +258,22 @@ int64_t summa_test_random_integer_between(int64_t min, int64_t max) {
     uint64_t bits  = ((uint64_t)rand() << 32) ^ (uint64_t)rand();
     uint64_t r     = (range == UINT64_MAX) ? bits : bits % (range + 1);
     return (int64_t)((uint64_t)min + r);
+}
+
+void summa_test_thread_start(summa_test_thread_t* thread, summa_test_thread_fn fn, void* arg) {
+#if SUMMA_TEST_C11_THREADS
+    SUMMA_TEST_ASSERT_EQ(thrd_success, thrd_create(thread, fn, arg));
+#else
+    SUMMA_TEST_ASSERT_EQ(0, pthread_create(thread, nullptr, fn, arg));
+#endif
+}
+
+void summa_test_thread_join(summa_test_thread_t* thread) {
+#if SUMMA_TEST_C11_THREADS
+    SUMMA_TEST_ASSERT_EQ(thrd_success, thrd_join(*thread, nullptr));
+#else
+    SUMMA_TEST_ASSERT_EQ(0, pthread_join(*thread, nullptr));
+#endif
 }
 
 #endif /* SUMMA_TEST_IMPLEMENTATION_ONCE */
