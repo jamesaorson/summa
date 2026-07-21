@@ -11,32 +11,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-static void free_global_env(SummaSchemeEnvironment env) {
-    for (size_t i = 0; i < env->bindings->length; i++) {
-        SummaSchemeBinding binding = env->bindings->value[i];
-        if (binding.value.type == SummaSchemeProcedureType) {
-            summa_symbol_list_free(binding.value.value.procedure.bindings);
-            summa_list_free(binding.value.value.procedure.body);
-        }
-        summa_string_free(binding.name);
-    }
-    summa_binding_list_free(env->bindings);
-}
-
-/* summa_scheme_environment_make_global is an assignment macro that evaluates to
- * void, so it can't be a SCOPED_VALUE initializer. This does the same two steps
- * as an expression. Note the environment itself is a compound literal with
- * automatic storage duration, so it must be built in the scope that uses it --
- * which is exactly where the macro expansion puts it -- and never returned from
- * a helper. */
-static SummaSchemeEnvironment init_global_env(SummaSchemeEnvironment env) {
-    summa_scheme_environment_init_global(env);
-    return env;
-}
-
+/* The environment owns its bindings' names and values, so teardown is the
+ * library's job now -- no walking the binding list by hand here. */
 #define SCOPED_GLOBAL_ENV(var) \
     SUMMA_TEST_SCOPED_VALUE(   \
-        SummaSchemeEnvironment, var, init_global_env(summa_scheme_environment_make_empty()), free_global_env)
+        SummaSchemeEnvironment, var, summa_scheme_environment_make_global(), summa_scheme_environment_free)
 
 #define SCOPED_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaList, var, init, summa_list_free)
 #define SCOPED_STRING(var, init) SUMMA_TEST_SCOPED_VALUE(SummaString, var, init, summa_string_free)

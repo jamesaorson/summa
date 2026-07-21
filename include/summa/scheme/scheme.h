@@ -36,6 +36,15 @@ SUMMA_ARRAY_GENERATE_TYPE_DEF(SummaList, list, SummaSchemeValue)
 SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSchemeValue* src);
 bool             summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeValue* right);
 
+/* Releases exactly what summa_scheme_value_copy allocates: the container
+ * handles and strings the value itself owns.
+ *
+ * Deliberately shallow, to mirror the copy it undoes. summa_list_copy and
+ * summa_symbol_list_copy move elements as raw bytes, so a copied list shares
+ * every handle sitting inside its elements with the original -- freeing those
+ * here would double-free them. Whoever built the elements frees the elements. */
+void summa_scheme_value_free(SummaSchemeValue* value);
+
 typedef enum {
     SummaSchemeBooleanType,
     SummaSchemeCharacterType,
@@ -156,14 +165,28 @@ struct SummaSchemeEnvironment_t {
     SummaSchemeEnvironment parent;
 };
 
+/* Environments are heap-allocated and returned by value-shaped constructors, so
+ * they can outlive the block that built them -- which is what a procedure
+ * capturing its defining environment will require.
+ *
+ * `parent` is borrowed, never owned: freeing a child leaves its parent alone,
+ * and a parent must outlive every child pointing at it. That constraint is what
+ * gets lifted when environments become reference counted. */
+SummaSchemeEnvironment summa_scheme_environment_make(SummaSchemeEnvironment parent);
+SummaSchemeEnvironment summa_scheme_environment_make_global(void);
+
+/* Frees the environment, its binding list, and every name and value bound in
+ * it -- but not its parent. */
+void summa_scheme_environment_free(SummaSchemeEnvironment env);
+
 void summa_scheme_environment_init_global(SummaSchemeEnvironment env);
 
-#define summa_scheme_environment_make(bindings_, parent_) \
-    (&(struct SummaSchemeEnvironment_t){.bindings = (bindings_), .parent = (parent_)})
-#define summa_scheme_environment_make_empty() summa_scheme_environment_make(summa_binding_list_make_empty(), nullptr)
-#define summa_scheme_environment_make_global(env) \
-    ((env) = summa_scheme_environment_make_empty(), summa_scheme_environment_init_global((env)))
+#define summa_scheme_environment_make_empty() summa_scheme_environment_make(nullptr)
 
+/* Binds `newBinding` in `env`, replacing any binding of the same name. The
+ * environment takes ownership of the binding's name and value on both paths --
+ * on a rebind it keeps the name it already had and releases the incoming
+ * duplicate, so the caller must not free either after the call. */
 SummaSchemeError summa_scheme_environment_set(const SummaSchemeEnvironment env, SummaSchemeBinding newBinding);
 
 SummaSchemeError summa_scheme_environment_get(const SummaSchemeEnvironment env,
@@ -341,9 +364,21 @@ SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSche
         summa_list_copy(dest->value.list.value, src->value.list.value);
     } break;
     case SummaSchemeProcedureType: {
-        dest->value.procedure.name = summa_string_make(src->value.procedure.name->value);
-        summa_symbol_list_copy(dest->value.procedure.bindings, src->value.procedure.bindings);
-        summa_list_copy(dest->value.procedure.body, src->value.procedure.body);
+        /* dest's handles are whatever the caller happened to have there, so
+         * each one is built fresh before being copied into -- the same shape
+         * the list and vector branches use. A procedure may legitimately carry
+         * no bindings or no body, and a null handle stays null. */
+        dest->value.procedure.name     = summa_string_make(src->value.procedure.name->value);
+        dest->value.procedure.bindings = nullptr;
+        dest->value.procedure.body     = nullptr;
+        if (src->value.procedure.bindings) {
+            dest->value.procedure.bindings = summa_symbol_list_make_empty();
+            summa_symbol_list_copy(dest->value.procedure.bindings, src->value.procedure.bindings);
+        }
+        if (src->value.procedure.body) {
+            dest->value.procedure.body = summa_list_make_empty();
+            summa_list_copy(dest->value.procedure.body, src->value.procedure.body);
+        }
     } break;
     case SummaSchemeStringType: {
         dest->value.string.value = summa_string_make(src->value.string.value->value);
@@ -361,6 +396,49 @@ SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSche
     }
 
     return summa_success();
+}
+
+/* Releases a handle and nulls it, so a double free through the same value is a
+ * no-op rather than a crash. */
+#define SUMMA_SCHEME_FREE_HANDLE(handle, free_fn) \
+    do {                                          \
+        if (handle) {                             \
+            free_fn(handle);                      \
+            (handle) = nullptr;                   \
+        }                                         \
+    } while (0)
+
+void summa_scheme_value_free(SummaSchemeValue* value) {
+    if (!value) {
+        return;
+    }
+    switch (value->type) {
+    case SummaSchemeBooleanType:
+    case SummaSchemeCharacterType:
+    case SummaSchemeFloatingType:
+    case SummaSchemeIntegerType: {
+        /* Stored inline in the union; nothing was allocated. */
+    } break;
+    case SummaSchemeListType: {
+        SUMMA_SCHEME_FREE_HANDLE(value->value.list.value, summa_list_free);
+    } break;
+    case SummaSchemeProcedureType: {
+        /* A procedure can carry no bindings or no body, so each handle is
+         * checked before release. */
+        SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.name, summa_string_free);
+        SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.bindings, summa_symbol_list_free);
+        SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.body, summa_list_free);
+    } break;
+    case SummaSchemeStringType: {
+        SUMMA_SCHEME_FREE_HANDLE(value->value.string.value, summa_string_free);
+    } break;
+    case SummaSchemeSymbolType: {
+        SUMMA_SCHEME_FREE_HANDLE(value->value.symbol.value, summa_string_free);
+    } break;
+    case SummaSchemeVectorType: {
+        SUMMA_SCHEME_FREE_HANDLE(value->value.vector.value, summa_list_free);
+    } break;
+    }
 }
 
 bool summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeValue* right) {
@@ -429,26 +507,69 @@ bool summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeVa
     }
 }
 
+SummaSchemeEnvironment summa_scheme_environment_make(SummaSchemeEnvironment parent) {
+    SummaSchemeEnvironment env = malloc(sizeof(struct SummaSchemeEnvironment_t));
+    assert(env);
+    env->bindings = summa_binding_list_make_empty();
+    env->parent   = parent;
+    return env;
+}
+
+SummaSchemeEnvironment summa_scheme_environment_make_global(void) {
+    SummaSchemeEnvironment env = summa_scheme_environment_make(nullptr);
+    summa_scheme_environment_init_global(env);
+    return env;
+}
+
+void summa_scheme_environment_free(SummaSchemeEnvironment env) {
+    if (!env) {
+        return;
+    }
+    for (size_t i = 0; i < env->bindings->length; i++) {
+        SummaSchemeBinding* binding = &env->bindings->value[i];
+        summa_scheme_value_free(&binding->value);
+        summa_string_free(binding->name);
+    }
+    summa_binding_list_free(env->bindings);
+    /* parent is borrowed, not owned. */
+    free(env);
+}
+
 void summa_scheme_environment_init_global(SummaSchemeEnvironment env) {
     SummaSchemeBindingList bindings = env->bindings;
-    SummaString            bindingName;
 
-    bindingName = summa_string_make("+");
+    /* The binding's name and the procedure's name are two separate strings on
+     * purpose. Sharing one handle across both would make the binding and the
+     * value it holds co-owners of it, and freeing the environment would then
+     * release it twice. */
+    SummaString bindingName   = summa_string_make("+");
+    SummaString procedureName = summa_string_make("+");
     summa_binding_list_push(
         bindings,
         &summa_scheme_binding_make(
             bindingName,
-            summa_make_scheme_procedure(bindingName, summa_symbol_list_make_empty(), summa_list_make_empty())));
+            summa_make_scheme_procedure(procedureName, summa_symbol_list_make_empty(), summa_list_make_empty())));
 }
 
 SummaSchemeError summa_scheme_environment_set(const SummaSchemeEnvironment env, SummaSchemeBinding newBinding) {
     for (size_t i = 0; i < env->bindings->length; i++) {
-        SummaSchemeBinding binding = env->bindings->value[i];
-        if (summa_string_cmp(binding.name, newBinding.name) == 0) {
-            summa_scheme_value_copy(&binding.value, &newBinding.value);
+        /* By reference: a copy of the element would take the rebinding with it
+         * when it went out of scope, leaving the environment untouched. */
+        SummaSchemeBinding* binding = &env->bindings->value[i];
+        if (summa_string_cmp(binding->name, newBinding.name) == 0) {
+            /* The old value is being replaced, so it goes before the overwrite
+             * rather than after it. The incoming value is moved in rather than
+             * copied, and the incoming name is released -- the environment
+             * already holds an equal one, and set() owns everything it is
+             * handed on both paths. */
+            summa_scheme_value_free(&binding->value);
+            binding->value = newBinding.value;
+            summa_string_free(newBinding.name);
             return summa_success();
         }
     }
+    /* Pushed by value: the environment takes ownership of the binding's name
+     * and value from here on. */
     summa_binding_list_push(env->bindings, &newBinding);
     return summa_success();
 }

@@ -7,15 +7,9 @@
 #define SUMMA_STRING_IMPLEMENTATION
 #include <summa/string/string.h>
 
-static void free_env(SummaSchemeEnvironment env) {
-    summa_binding_list_free(env->bindings);
-}
-
-/* The environment is a compound literal with automatic storage duration, so it
- * has to be built in the scope that uses it -- which is where the macro's
- * loop-init clause puts it -- rather than returned from a helper. */
-#define SCOPED_ENV(var) \
-    SUMMA_TEST_SCOPED_VALUE(SummaSchemeEnvironment, var, summa_scheme_environment_make_empty(), free_env)
+#define SCOPED_ENV(var)      \
+    SUMMA_TEST_SCOPED_VALUE( \
+        SummaSchemeEnvironment, var, summa_scheme_environment_make_empty(), summa_scheme_environment_free)
 
 void test_scheme_read() {
     SCOPED_ENV(env) {
