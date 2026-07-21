@@ -665,15 +665,7 @@ void summa_scheme_argument_list_free(SummaList args) {
     summa_list_free(args);
 }
 
-SummaSchemeError summa_scheme_procedure_dispatch_global([[maybe_unused]] SummaSchemeEnvironment env,
-                                                        SummaSchemeProcedure                    proc,
-                                                        const SummaList                         args,
-                                                        SummaSchemeValue*                       out) {
-    if (strcmp(proc.name->value, "+") != 0) {
-        snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "Unknown builtin procedure: %s", proc.name->value);
-        return summa_make_error(ERROR_MESSAGE);
-    }
-
+SummaSchemeError summa_scheme_dispatch_builtin_add(const SummaList args, SummaSchemeValue* out) {
     bool has_floating = false;
     for (size_t i = 0; i < args->length; i++) {
         switch (args->value[i].type) {
@@ -702,16 +694,24 @@ SummaSchemeError summa_scheme_procedure_dispatch_global([[maybe_unused]] SummaSc
         }
         *out = summa_make_scheme_integer(result);
     }
-
     return summa_success();
 }
 
-SummaSchemeError summa_scheme_procedure_dispatch(SummaSchemeEnvironment env,
-                                                 SummaSchemeProcedure   proc,
-                                                 const SummaList        args,
-                                                 SummaSchemeValue*      out) {
+SummaSchemeError
+summa_scheme_procedure_dispatch_global(SummaSchemeProcedure proc, const SummaList args, SummaSchemeValue* out) {
+    if (strcmp(proc.name->value, "+") == 0) {
+        return summa_scheme_dispatch_builtin_add(args, out);
+    }
+    snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "Unknown builtin procedure: %s", proc.name->value);
+    return summa_make_error(ERROR_MESSAGE);
+}
+
+SummaSchemeError summa_scheme_procedure_dispatch([[maybe_unused]] SummaSchemeEnvironment env,
+                                                 SummaSchemeProcedure                    proc,
+                                                 const SummaList                         args,
+                                                 SummaSchemeValue*                       out) {
     if (!proc.body) {
-        return summa_scheme_procedure_dispatch_global(env, proc, args, out);
+        return summa_scheme_procedure_dispatch_global(proc, args, out);
     }
     return summa_make_error("NOT IMPLEMENTED - user-defined procedures");
 }
