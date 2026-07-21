@@ -248,8 +248,17 @@ SummaSchemeError summa_scheme_evaluate([[maybe_unused]] const SummaSchemeEnviron
         *out = summa_make_scheme_string(in.value.string.value->value);
     } break;
     case SummaSchemeSymbolType: {
-        // TODO: May be wrong, as we want to return pointer, but for now we can use strings for that
-        *out = summa_make_scheme_symbol(in.value.string.value->value);
+        SummaSchemeBinding binding;
+        SummaSchemeValue   symbol = summa_make_scheme_symbol(in.value.string.value->value);
+        SummaSchemeError   err    = summa_scheme_environment_get(env, symbol.value.symbol, &binding);
+        if (err.had) {
+            binding.name  = symbol.value.symbol.value;
+            binding.value = symbol;
+            summa_scheme_environment_set(env, binding);
+            *out = symbol;
+        } else {
+            *out = binding.value;
+        }
     } break;
     case SummaSchemeVectorType: {
         return summa_scheme_value_copy(out, &in);
