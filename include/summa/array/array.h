@@ -30,6 +30,9 @@ void       summa_array_set_at(SummaArray arr, size_t index, void* element);
 #ifndef SUMMA_ARRAY_IMPLEMENTATION_ONCE
 #define SUMMA_ARRAY_IMPLEMENTATION_ONCE
 
+#include <stdlib.h>
+#include <string.h>
+
 #define SUMMA_ARRAY_DEFAULT_CAPACITY 8
 
 SummaArray summa_array_make(const void* elements, size_t num_elements, size_t element_size) {
