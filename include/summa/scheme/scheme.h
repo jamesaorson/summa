@@ -33,18 +33,19 @@ typedef struct {
 
 typedef struct SummaSchemeValue SummaSchemeValue;
 
+/* Procedures capture their defining environment, so the handle is needed below. */
+typedef struct SummaSchemeEnvironment_t* SummaSchemeEnvironment;
+
 SUMMA_ARRAY_GENERATE_TYPE_DEF(SummaList, list, SummaSchemeValue)
 
 SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSchemeValue* src);
 bool             summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeValue* right);
 
-/* Releases exactly what summa_scheme_value_copy allocates: the container
- * handles and strings the value itself owns.
+/* Mirrors summa_scheme_value_copy: both are deep, so a copied container owns
+ * its elements and can outlive whatever built it. Builtins depend on that --
+ * arguments are released as soon as dispatch returns.
  *
- * Deliberately shallow, to mirror the copy it undoes. summa_list_copy and
- * summa_symbol_list_copy move elements as raw bytes, so a copied list shares
- * every handle sitting inside its elements with the original -- freeing those
- * here would double-free them. Whoever built the elements frees the elements. */
+ * A procedure's captured environment is borrowed, and not freed here. */
 void summa_scheme_value_free(SummaSchemeValue* value);
 
 typedef enum {
@@ -99,15 +100,35 @@ typedef struct {
 
 SUMMA_ARRAY_GENERATE_TYPE(SummaSchemeSymbolList, symbol_list, SummaSchemeSymbol)
 
+/* A null `body` marks a builtin; dispatch sends it to the procedure table.
+ *
+ * `closure` is the defining environment, borrowed like
+ * SummaSchemeEnvironment_t::parent. A closure that escapes the frame it
+ * captured therefore dangles -- see BUILTINS.md. */
 typedef struct {
-    SummaString           name;
-    SummaSchemeSymbolList bindings;
-    SummaList             body;
+    SummaString            name;
+    SummaSchemeSymbolList  bindings;
+    SummaList              body;
+    SummaSchemeEnvironment closure;
 } SummaSchemeProcedure;
 
 #define summa_make_scheme_procedure(name_, bindings_, body_)         \
     ((SummaSchemeValue){.type            = SummaSchemeProcedureType, \
-                        .value.procedure = {.name = (name_), .bindings = (bindings_), .body = (body_)}})
+                        .value.procedure = {                         \
+                            .name     = (name_),                     \
+                            .bindings = (bindings_),                 \
+                            .body     = (body_),                     \
+                            .closure  = nullptr,                     \
+                        }})
+
+#define summa_make_scheme_closure(name_, bindings_, body_, closure_) \
+    ((SummaSchemeValue){.type            = SummaSchemeProcedureType, \
+                        .value.procedure = {                         \
+                            .name     = (name_),                     \
+                            .bindings = (bindings_),                 \
+                            .body     = (body_),                     \
+                            .closure  = (closure_),                  \
+                        }})
 
 typedef struct {
     SummaString value;
@@ -161,7 +182,6 @@ typedef struct {
 
 SUMMA_ARRAY_GENERATE_TYPE(SummaSchemeBindingList, binding_list, SummaSchemeBinding)
 
-typedef struct SummaSchemeEnvironment_t* SummaSchemeEnvironment;
 struct SummaSchemeEnvironment_t {
     SummaSchemeBindingList bindings;
     SummaSchemeEnvironment parent;
@@ -198,6 +218,15 @@ SummaSchemeError summa_scheme_environment_get(const SummaSchemeEnvironment env,
 SummaSchemeError
 summa_scheme_environment_get_string(const SummaSchemeEnvironment env, const SummaString str, SummaSchemeBinding* out);
 
+/* Rebinds a name wherever the chain already holds it, which environment_set
+ * deliberately does not do. Takes ownership of `value` only on success; an
+ * unbound name is an error and leaves it with the caller. */
+SummaSchemeError
+summa_scheme_environment_assign(const SummaSchemeEnvironment env, const SummaString name, SummaSchemeValue value);
+
+/* #f alone is false. Zero and the empty list are both true. */
+bool summa_scheme_truthy(const SummaSchemeValue* value);
+
 #pragma endregion Values
 
 #pragma region REPL
@@ -205,7 +234,15 @@ summa_scheme_environment_get_string(const SummaSchemeEnvironment env, const Summ
 SummaSchemeError summa_scheme_read(const SummaSchemeEnvironment env, const char* inputText, SummaSchemeValue* out);
 SummaSchemeError
 summa_scheme_evaluate(const SummaSchemeEnvironment env, const SummaSchemeValue in, SummaSchemeValue* out);
+
+/* `print` is R7RS `write` -- strings quoted, so output reads back as source.
+ * `display` is the same traversal with strings raw, nested ones included. */
 SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out);
+SummaSchemeError summa_scheme_display(const SummaSchemeValue value, FILE* out);
+
+/* Stands in for the missing tail-call optimization: an error beats walking off
+ * the C stack. Counted in evaluate frames, several per Scheme-level call. */
+#define SUMMA_SCHEME_MAX_DEPTH 2000
 
 #pragma endregion REPL
 
@@ -224,21 +261,64 @@ SummaSchemeError
 summa_scheme_evaluate_arguments(const SummaSchemeEnvironment env, const SummaList form, SummaList* out);
 void summa_scheme_argument_list_free(SummaList args);
 
+/* Evaluates form[1..], dispatches, releases them. Every call goes through here. */
+static SummaSchemeError summa_scheme_apply(const SummaSchemeEnvironment env,
+                                           SummaSchemeProcedure         proc,
+                                           const SummaList              form,
+                                           SummaSchemeValue*            out);
+
+/* Dispatched before the operands are touched -- a special form decides for
+ * itself which of them get evaluated. */
+typedef SummaSchemeError (*SummaSchemeSpecialFormFn)(const SummaSchemeEnvironment env,
+                                                     const SummaList              form,
+                                                     SummaSchemeValue*            out);
+
+static SummaSchemeSpecialFormFn summa_scheme_special_form_lookup(const char* name);
+static SummaSchemeError         summa_scheme_evaluate_sequence(const SummaSchemeEnvironment env,
+                                                               const SummaList              form,
+                                                               size_t                       start,
+                                                               SummaSchemeValue*            out);
+
+/* The value R7RS leaves unspecified: `(if #f #f)`, `set!`, `display`. */
+#define summa_scheme_unspecified() summa_make_scheme_boolean(false)
+
 SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment env,
                                    [[maybe_unused]] const char*                  inputText,
                                    [[maybe_unused]] SummaSchemeValue*            out) {
     return summa_make_error("summa_scheme_read - NOT IMPLEMENTED");
 }
 
-SummaSchemeError summa_scheme_evaluate([[maybe_unused]] const SummaSchemeEnvironment env,
-                                       const SummaSchemeValue                        in,
-                                       SummaSchemeValue*                             out) {
-    // TODO: Check if the in value has been defined before. If so, return the SummaSchemeValue* of the global
-    // value.
+bool summa_scheme_truthy(const SummaSchemeValue* value) {
+    return !(value->type == SummaSchemeBooleanType && !value->value.boolean.value);
+}
+
+static size_t SUMMA_SCHEME_DEPTH = 0;
+
+static SummaSchemeError
+summa_scheme_evaluate_inner(const SummaSchemeEnvironment env, const SummaSchemeValue in, SummaSchemeValue* out);
+
+/* All recursion re-enters here, so the depth guard is written once. */
+SummaSchemeError
+summa_scheme_evaluate(const SummaSchemeEnvironment env, const SummaSchemeValue in, SummaSchemeValue* out) {
     if (!out) {
         return summa_make_error("summa_scheme_evaluate - Out file was null");
     }
+    /* Seeded before anything can fail, so every path out has written *out and
+     * no error path has to remember to. */
+    *out = summa_scheme_unspecified();
 
+    if (SUMMA_SCHEME_DEPTH >= SUMMA_SCHEME_MAX_DEPTH) {
+        return summa_make_error("summa_scheme_evaluate - recursion limit exceeded (tail calls are not optimized yet)");
+    }
+    SUMMA_SCHEME_DEPTH++;
+    const SummaSchemeError err = summa_scheme_evaluate_inner(env, in, out);
+    SUMMA_SCHEME_DEPTH--;
+    return err;
+}
+
+static SummaSchemeError summa_scheme_evaluate_inner([[maybe_unused]] const SummaSchemeEnvironment env,
+                                                    const SummaSchemeValue                        in,
+                                                    SummaSchemeValue*                             out) {
     switch (in.type) {
     case SummaSchemeBooleanType: {
         *out = summa_make_scheme_boolean(in.value.boolean.value);
@@ -254,17 +334,37 @@ SummaSchemeError summa_scheme_evaluate([[maybe_unused]] const SummaSchemeEnviron
     } break;
     case SummaSchemeListType: {
         SummaList form = in.value.list.value;
-        if (form && form->length > 0 && form->value[0].type == SummaSchemeSymbolType) {
-            SummaSchemeBinding head;
-            SummaSchemeError   lookup = summa_scheme_environment_get(env, form->value[0].value.symbol, &head);
-            if (!lookup.had && head.value.type == SummaSchemeProcedureType) {
-                SummaList        args = nullptr;
-                SummaSchemeError err  = summa_scheme_evaluate_arguments(env, form, &args);
-                if (!err.had) {
-                    err = summa_scheme_procedure_dispatch(env, head.value.value.procedure, args, out);
+        if (form && form->length > 0) {
+            if (form->value[0].type == SummaSchemeSymbolType) {
+                /* Ahead of the binding lookup, deliberately. `if` routed
+                 * through the application path would evaluate both branches
+                 * and turn every recursive base case into a loop. */
+                const SummaSchemeSpecialFormFn special =
+                    summa_scheme_special_form_lookup(form->value[0].value.symbol.value->value);
+                if (special) {
+                    return special(env, form, out);
                 }
-                summa_scheme_argument_list_free(args);
-                return err;
+
+                SummaSchemeBinding head;
+                SummaSchemeError   lookup = summa_scheme_environment_get(env, form->value[0].value.symbol, &head);
+                if (!lookup.had && head.value.type == SummaSchemeProcedureType) {
+                    return summa_scheme_apply(env, head.value.value.procedure, form, out);
+                }
+            } else if (form->value[0].type == SummaSchemeListType) {
+                /* `((lambda (x) x) 1)` -- the operator is an expression.
+                 * Anything that is not a procedure stays data. */
+                SummaSchemeValue       operator_value;
+                const SummaSchemeError err = summa_scheme_evaluate(env, form->value[0], &operator_value);
+                if (err.had) {
+                    return err;
+                }
+                if (operator_value.type == SummaSchemeProcedureType) {
+                    const SummaSchemeError applied =
+                        summa_scheme_apply(env, operator_value.value.procedure, form, out);
+                    summa_scheme_value_free(&operator_value);
+                    return applied;
+                }
+                summa_scheme_value_free(&operator_value);
             }
         }
         return summa_scheme_value_copy(out, &in);
@@ -306,7 +406,17 @@ SummaSchemeError summa_scheme_evaluate([[maybe_unused]] const SummaSchemeEnviron
     return summa_success();
 }
 
+static SummaSchemeError summa_scheme_print_styled(const SummaSchemeValue value, FILE* out, bool quote_strings);
+
 SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out) {
+    return summa_scheme_print_styled(value, out, true);
+}
+
+SummaSchemeError summa_scheme_display(const SummaSchemeValue value, FILE* out) {
+    return summa_scheme_print_styled(value, out, false);
+}
+
+static SummaSchemeError summa_scheme_print_styled(const SummaSchemeValue value, FILE* out, bool quote_strings) {
     if (!out) {
         return summa_make_error("summa_scheme_print - Out file was null");
     }
@@ -340,7 +450,7 @@ SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out) {
                 fprintf(out, " ");
             }
             SummaSchemeValue next_value = val.value->value[i];
-            summa_scheme_print(next_value, out);
+            summa_scheme_print_styled(next_value, out, quote_strings);
         }
         fprintf(out, ")");
     } break;
@@ -360,7 +470,7 @@ SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out) {
     case SummaSchemeStringType: {
         SummaSchemeString val = value.value.string;
         SummaString       str = val.value;
-        fprintf(out, "\"%s\"", str->value);
+        fprintf(out, quote_strings ? "\"%s\"" : "%s", str->value);
     } break;
     case SummaSchemeSymbolType: {
         SummaSchemeSymbol val = value.value.symbol;
@@ -375,7 +485,7 @@ SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out) {
                 fprintf(out, " ");
             }
             SummaSchemeValue next_value = val.value->value[i];
-            summa_scheme_print(next_value, out);
+            summa_scheme_print_styled(next_value, out, quote_strings);
         }
         fprintf(out, ")");
     } break;
@@ -385,6 +495,53 @@ SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out) {
     }
 
     return summa_success();
+}
+
+/* summa_list_copy moves elements as raw bytes, leaving the copy sharing every
+ * handle inside them. These walk instead. */
+static SummaList summa_scheme_list_copy_deep(const SummaList src) {
+    if (!src) {
+        return nullptr;
+    }
+    SummaList dest = summa_list_make_empty();
+    for (size_t i = 0; i < src->length; i++) {
+        SummaSchemeValue element;
+        summa_scheme_value_copy(&element, &src->value[i]);
+        summa_list_push(dest, &element);
+    }
+    return dest;
+}
+
+static SummaSchemeSymbolList summa_scheme_symbol_list_copy_deep(const SummaSchemeSymbolList src) {
+    if (!src) {
+        return nullptr;
+    }
+    SummaSchemeSymbolList dest = summa_symbol_list_make_empty();
+    for (size_t i = 0; i < src->length; i++) {
+        SummaSchemeSymbol symbol = {.value = summa_string_make(src->value[i].value->value)};
+        summa_symbol_list_push(dest, &symbol);
+    }
+    return dest;
+}
+
+static void summa_scheme_list_free_deep(SummaList list) {
+    if (!list) {
+        return;
+    }
+    for (size_t i = 0; i < list->length; i++) {
+        summa_scheme_value_free(&list->value[i]);
+    }
+    summa_list_free(list);
+}
+
+static void summa_scheme_symbol_list_free_deep(SummaSchemeSymbolList symbols) {
+    if (!symbols) {
+        return;
+    }
+    for (size_t i = 0; i < symbols->length; i++) {
+        summa_string_free(symbols->value[i].value);
+    }
+    summa_symbol_list_free(symbols);
 }
 
 SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSchemeValue* src) {
@@ -404,8 +561,7 @@ SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSche
         dest->value = src->value;
     } break;
     case SummaSchemeListType: {
-        dest->value.list.value = summa_list_make_empty();
-        summa_list_copy(dest->value.list.value, src->value.list.value);
+        dest->value.list.value = summa_scheme_list_copy_deep(src->value.list.value);
     } break;
     case SummaSchemeProcedureType: {
         /* dest's handles are whatever the caller happened to have there, so
@@ -415,13 +571,13 @@ SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSche
         dest->value.procedure.name     = summa_string_make(src->value.procedure.name->value);
         dest->value.procedure.bindings = nullptr;
         dest->value.procedure.body     = nullptr;
+        /* Borrowed: not the procedure's to duplicate or release. */
+        dest->value.procedure.closure = src->value.procedure.closure;
         if (src->value.procedure.bindings) {
-            dest->value.procedure.bindings = summa_symbol_list_make_empty();
-            summa_symbol_list_copy(dest->value.procedure.bindings, src->value.procedure.bindings);
+            dest->value.procedure.bindings = summa_scheme_symbol_list_copy_deep(src->value.procedure.bindings);
         }
         if (src->value.procedure.body) {
-            dest->value.procedure.body = summa_list_make_empty();
-            summa_list_copy(dest->value.procedure.body, src->value.procedure.body);
+            dest->value.procedure.body = summa_scheme_list_copy_deep(src->value.procedure.body);
         }
     } break;
     case SummaSchemeStringType: {
@@ -431,8 +587,7 @@ SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSche
         dest->value.symbol.value = summa_string_make(src->value.symbol.value->value);
     } break;
     case SummaSchemeVectorType: {
-        dest->value.vector.value = summa_list_make_empty();
-        summa_list_copy(dest->value.vector.value, src->value.vector.value);
+        dest->value.vector.value = summa_scheme_list_copy_deep(src->value.vector.value);
     } break;
     default: {
         return summa_make_error("summa_scheme_value_copy - Invalid scheme type provided");
@@ -464,14 +619,16 @@ void summa_scheme_value_free(SummaSchemeValue* value) {
         /* Stored inline in the union; nothing was allocated. */
     } break;
     case SummaSchemeListType: {
-        SUMMA_SCHEME_FREE_HANDLE(value->value.list.value, summa_list_free);
+        SUMMA_SCHEME_FREE_HANDLE(value->value.list.value, summa_scheme_list_free_deep);
     } break;
     case SummaSchemeProcedureType: {
         /* A procedure can carry no bindings or no body, so each handle is
-         * checked before release. */
+         * checked before release. `closure` is borrowed and deliberately
+         * absent -- freeing a procedure must not disturb the environment it
+         * was defined in. */
         SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.name, summa_string_free);
-        SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.bindings, summa_symbol_list_free);
-        SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.body, summa_list_free);
+        SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.bindings, summa_scheme_symbol_list_free_deep);
+        SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.body, summa_scheme_list_free_deep);
     } break;
     case SummaSchemeStringType: {
         SUMMA_SCHEME_FREE_HANDLE(value->value.string.value, summa_string_free);
@@ -480,7 +637,7 @@ void summa_scheme_value_free(SummaSchemeValue* value) {
         SUMMA_SCHEME_FREE_HANDLE(value->value.symbol.value, summa_string_free);
     } break;
     case SummaSchemeVectorType: {
-        SUMMA_SCHEME_FREE_HANDLE(value->value.vector.value, summa_list_free);
+        SUMMA_SCHEME_FREE_HANDLE(value->value.vector.value, summa_scheme_list_free_deep);
     } break;
     }
 }
@@ -579,19 +736,23 @@ void summa_scheme_environment_free(SummaSchemeEnvironment env) {
     free(env);
 }
 
+/* The table lives with the builtins; this only needs the names. */
+static size_t      summa_scheme_builtin_count(void);
+static const char* summa_scheme_builtin_name(size_t index);
+
 void summa_scheme_environment_init_global(SummaSchemeEnvironment env) {
     SummaSchemeBindingList bindings = env->bindings;
 
-    /* The binding's name and the procedure's name are two separate strings on
-     * purpose. Sharing one handle across both would make the binding and the
-     * value it holds co-owners of it, and freeing the environment would then
-     * release it twice. */
-    SummaString bindingName   = summa_string_make("+");
-    SummaString procedureName = summa_string_make("+");
-    summa_binding_list_push(
-        bindings,
-        &summa_scheme_binding_make(
-            bindingName, summa_make_scheme_procedure(procedureName, summa_symbol_list_make_empty(), nullptr)));
+    for (size_t i = 0; i < summa_scheme_builtin_count(); i++) {
+        const char* name = summa_scheme_builtin_name(i);
+        /* The binding's name and the procedure's name are separate strings on
+         * purpose: one handle shared across both would be freed twice. */
+        summa_binding_list_push(
+            bindings,
+            &summa_scheme_binding_make(
+                summa_string_make(name),
+                summa_make_scheme_procedure(summa_string_make(name), summa_symbol_list_make_empty(), nullptr)));
+    }
 }
 
 SummaSchemeError summa_scheme_environment_set(const SummaSchemeEnvironment env, SummaSchemeBinding newBinding) {
@@ -640,6 +801,25 @@ summa_scheme_environment_get_string(const SummaSchemeEnvironment env, const Summ
 }
 
 SummaSchemeError
+summa_scheme_environment_assign(const SummaSchemeEnvironment env, const SummaString name, SummaSchemeValue value) {
+    for (size_t i = 0; i < env->bindings->length; i++) {
+        /* By reference: a copy would carry the rebinding out of scope. */
+        SummaSchemeBinding* binding = &env->bindings->value[i];
+        if (summa_string_cmp(binding->name, name) == 0) {
+            summa_scheme_value_free(&binding->value);
+            binding->value = value;
+            return summa_success();
+        }
+    }
+    if (env->parent) {
+        return summa_scheme_environment_assign(env->parent, name, value);
+    }
+    /* Nothing took ownership, so `value` is still the caller's to release. */
+    snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "set! - unbound variable: %s", name->value);
+    return summa_make_error(ERROR_MESSAGE);
+}
+
+SummaSchemeError
 summa_scheme_evaluate_arguments(const SummaSchemeEnvironment env, const SummaList form, SummaList* out) {
     SummaList args = summa_list_make_empty();
     for (size_t i = 1; i < form->length; i++) {
@@ -666,26 +846,84 @@ void summa_scheme_argument_list_free(SummaList args) {
     summa_list_free(args);
 }
 
-SummaSchemeError summa_scheme_dispatch_builtin_add(const SummaList args, SummaSchemeValue* out) {
-    bool has_floating = false;
+static SummaSchemeError summa_scheme_apply(const SummaSchemeEnvironment env,
+                                           SummaSchemeProcedure         proc,
+                                           const SummaList              form,
+                                           SummaSchemeValue*            out) {
+    SummaList        args = nullptr;
+    SummaSchemeError err  = summa_scheme_evaluate_arguments(env, form, &args);
+    if (!err.had) {
+        err = summa_scheme_procedure_dispatch(env, proc, args, out);
+    }
+    /* Arguments die with the call; dispatch copies out anything it returns. */
+    summa_scheme_argument_list_free(args);
+    return err;
+}
+
+#pragma region Builtin procedures
+
+/* Arguments already evaluated, one value out. Anything needing an unevaluated
+ * operand is a special form, not a builtin. */
+typedef SummaSchemeError (*SummaSchemeBuiltinFn)(const SummaList args, SummaSchemeValue* out);
+
+typedef struct {
+    const char*          name;
+    SummaSchemeBuiltinFn fn;
+} SummaSchemeBuiltin;
+
+/* Unused until a fixed-arity builtin lands; `+` is variadic. */
+[[maybe_unused]] static SummaSchemeError
+summa_scheme_require_arity(const char* name, const SummaList args, size_t expected) {
+    if (args->length != expected) {
+        snprintf(ERROR_MESSAGE,
+                 ERROR_MESSAGE_LENGTH,
+                 "%s - expects %zu argument(s), got %zu",
+                 name,
+                 expected,
+                 args->length);
+        return summa_make_error(ERROR_MESSAGE);
+    }
+    return summa_success();
+}
+
+static bool summa_scheme_is_number(const SummaSchemeValue* value) {
+    return value->type == SummaSchemeIntegerType || value->type == SummaSchemeFloatingType;
+}
+
+static double summa_scheme_number_to_double(const SummaSchemeValue* value) {
+    return value->type == SummaSchemeFloatingType ? value->value.floating.value : (double)value->value.integer.value;
+}
+
+static SummaSchemeError summa_scheme_require_numbers(const char* name, const SummaList args) {
     for (size_t i = 0; i < args->length; i++) {
-        switch (args->value[i].type) {
-        case SummaSchemeFloatingType: {
-            has_floating = true;
-        } break;
-        case SummaSchemeIntegerType: {
-        } break;
-        default: {
-            return summa_make_error("+ - expects numeric arguments");
-        }
+        if (!summa_scheme_is_number(&args->value[i])) {
+            snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - expects numeric arguments", name);
+            return summa_make_error(ERROR_MESSAGE);
         }
     }
+    return summa_success();
+}
 
-    if (has_floating) {
+/* One inexact operand makes the result inexact. */
+static bool summa_scheme_has_floating(const SummaList args) {
+    for (size_t i = 0; i < args->length; i++) {
+        if (args->value[i].type == SummaSchemeFloatingType) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static SummaSchemeError summa_scheme_builtin_add(const SummaList args, SummaSchemeValue* out) {
+    const SummaSchemeError err = summa_scheme_require_numbers("+", args);
+    if (err.had) {
+        return err;
+    }
+
+    if (summa_scheme_has_floating(args)) {
         double result = 0.0;
         for (size_t i = 0; i < args->length; i++) {
-            SummaSchemeValue arg = args->value[i];
-            result += arg.type == SummaSchemeFloatingType ? arg.value.floating.value : (double)arg.value.integer.value;
+            result += summa_scheme_number_to_double(&args->value[i]);
         }
         *out = summa_make_scheme_floating(result);
     } else {
@@ -698,23 +936,509 @@ SummaSchemeError summa_scheme_dispatch_builtin_add(const SummaList args, SummaSc
     return summa_success();
 }
 
+/* One function plus one row: the global environment binds a procedure per row
+ * at startup, and dispatch finds it by name. */
+static const SummaSchemeBuiltin SUMMA_SCHEME_BUILTINS[] = {
+    {"+", summa_scheme_builtin_add},
+};
+
+static size_t summa_scheme_builtin_count(void) {
+    return sizeof(SUMMA_SCHEME_BUILTINS) / sizeof(SUMMA_SCHEME_BUILTINS[0]);
+}
+
+static const char* summa_scheme_builtin_name(size_t index) {
+    return SUMMA_SCHEME_BUILTINS[index].name;
+}
+
 SummaSchemeError
 summa_scheme_procedure_dispatch_global(SummaSchemeProcedure proc, const SummaList args, SummaSchemeValue* out) {
-    if (strcmp(proc.name->value, "+") == 0) {
-        return summa_scheme_dispatch_builtin_add(args, out);
+    for (size_t i = 0; i < summa_scheme_builtin_count(); i++) {
+        if (strcmp(proc.name->value, SUMMA_SCHEME_BUILTINS[i].name) == 0) {
+            return SUMMA_SCHEME_BUILTINS[i].fn(args, out);
+        }
     }
     snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "Unknown builtin procedure: %s", proc.name->value);
     return summa_make_error(ERROR_MESSAGE);
 }
 
-SummaSchemeError summa_scheme_procedure_dispatch([[maybe_unused]] SummaSchemeEnvironment env,
-                                                 SummaSchemeProcedure                    proc,
-                                                 const SummaList                         args,
-                                                 SummaSchemeValue*                       out) {
+#pragma endregion Builtin procedures
+
+#pragma region Special forms
+
+/* Evaluates form[start..] and yields the last value -- the body rule shared by
+ * lambda, begin, let, cond, when and unless. An empty range is not an error. */
+static SummaSchemeError summa_scheme_evaluate_sequence(const SummaSchemeEnvironment env,
+                                                       const SummaList              form,
+                                                       size_t                       start,
+                                                       SummaSchemeValue*            out) {
+    SummaSchemeValue result = summa_scheme_unspecified();
+    for (size_t i = start; i < form->length; i++) {
+        SummaSchemeValue       next;
+        const SummaSchemeError err = summa_scheme_evaluate(env, form->value[i], &next);
+        if (err.had) {
+            summa_scheme_value_free(&result);
+            return err;
+        }
+        summa_scheme_value_free(&result);
+        result = next;
+    }
+    *out = result;
+    return summa_success();
+}
+
+static SummaSchemeError summa_scheme_special_quote([[maybe_unused]] const SummaSchemeEnvironment env,
+                                                   const SummaList                               form,
+                                                   SummaSchemeValue*                             out) {
+    if (form->length != 2) {
+        return summa_make_error("quote - expects exactly one operand");
+    }
+    /* The point of the form: copied, never evaluated. */
+    return summa_scheme_value_copy(out, &form->value[1]);
+}
+
+static SummaSchemeError
+summa_scheme_special_if(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+    if (form->length < 3 || form->length > 4) {
+        return summa_make_error("if - expects (if test consequent [alternate])");
+    }
+
+    SummaSchemeValue       test;
+    const SummaSchemeError err = summa_scheme_evaluate(env, form->value[1], &test);
+    if (err.had) {
+        return err;
+    }
+    const bool truthy = summa_scheme_truthy(&test);
+    summa_scheme_value_free(&test);
+
+    /* Exactly one branch. Recursion terminating rests on this. */
+    if (truthy) {
+        return summa_scheme_evaluate(env, form->value[2], out);
+    }
+    if (form->length == 4) {
+        return summa_scheme_evaluate(env, form->value[3], out);
+    }
+    *out = summa_scheme_unspecified();
+    return summa_success();
+}
+
+/* Parameter names and body copied out; defining environment captured by
+ * handle. `params` is only read -- its elements stay the caller's. */
+static SummaSchemeError summa_scheme_make_closure(const SummaSchemeEnvironment env,
+                                                  const char*                  name,
+                                                  const SummaList              params,
+                                                  const SummaList              form,
+                                                  size_t                       body_start,
+                                                  SummaSchemeValue*            out) {
+    if (form->length <= body_start) {
+        snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - expects at least one body expression", name);
+        return summa_make_error(ERROR_MESSAGE);
+    }
+
+    SummaSchemeSymbolList bindings = summa_symbol_list_make_empty();
+    for (size_t i = 0; params && i < params->length; i++) {
+        if (params->value[i].type != SummaSchemeSymbolType) {
+            summa_scheme_symbol_list_free_deep(bindings);
+            snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - parameter names must be symbols", name);
+            return summa_make_error(ERROR_MESSAGE);
+        }
+        SummaSchemeSymbol symbol = {.value = summa_string_make(params->value[i].value.symbol.value->value)};
+        summa_symbol_list_push(bindings, &symbol);
+    }
+
+    SummaList body = summa_list_make_empty();
+    for (size_t i = body_start; i < form->length; i++) {
+        SummaSchemeValue expression;
+        summa_scheme_value_copy(&expression, &form->value[i]);
+        summa_list_push(body, &expression);
+    }
+
+    *out = summa_make_scheme_closure(summa_string_make(name), bindings, body, env);
+    return summa_success();
+}
+
+static SummaSchemeError
+summa_scheme_special_lambda(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+    if (form->length < 3) {
+        return summa_make_error("lambda - expects (lambda (parameters ...) body ...)");
+    }
+    if (form->value[1].type != SummaSchemeListType) {
+        return summa_make_error("lambda - parameter list must be a list");
+    }
+    return summa_scheme_make_closure(env, "lambda", form->value[1].value.list.value, form, 2, out);
+}
+
+static SummaSchemeError
+summa_scheme_special_define(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+    if (form->length < 3) {
+        return summa_make_error("define - expects (define name value) or (define (name parameters ...) body ...)");
+    }
+
+    const SummaSchemeValue target = form->value[1];
+
+    /* (define (name parameters ...) body ...) -- the procedure shorthand. */
+    if (target.type == SummaSchemeListType) {
+        const SummaList signature = target.value.list.value;
+        if (!signature || signature->length == 0 || signature->value[0].type != SummaSchemeSymbolType) {
+            return summa_make_error("define - procedure name must be a symbol");
+        }
+        const char* name = signature->value[0].value.symbol.value->value;
+
+        /* The signature minus its head. Elements are borrowed, so this list is
+         * released shallowly. */
+        SummaList params = summa_list_make_empty();
+        for (size_t i = 1; i < signature->length; i++) {
+            summa_list_push(params, &signature->value[i]);
+        }
+        SummaSchemeValue       procedure;
+        const SummaSchemeError err = summa_scheme_make_closure(env, name, params, form, 2, &procedure);
+        summa_list_free(params);
+        if (err.had) {
+            return err;
+        }
+        summa_scheme_environment_set(env, summa_scheme_binding_make(summa_string_make(name), procedure));
+        *out = summa_make_scheme_symbol(name);
+        return summa_success();
+    }
+
+    if (target.type != SummaSchemeSymbolType) {
+        return summa_make_error("define - name must be a symbol");
+    }
+    if (form->length != 3) {
+        return summa_make_error("define - expects exactly one value expression");
+    }
+
+    SummaSchemeValue       value;
+    const SummaSchemeError err = summa_scheme_evaluate(env, form->value[2], &value);
+    if (err.had) {
+        return err;
+    }
+    /* Separate strings: the binding name, the value, and the symbol returned
+     * are all freed by different owners. */
+    const char* name = target.value.symbol.value->value;
+    summa_scheme_environment_set(env, summa_scheme_binding_make(summa_string_make(name), value));
+    *out = summa_make_scheme_symbol(name);
+    return summa_success();
+}
+
+static SummaSchemeError
+summa_scheme_special_set(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+    if (form->length != 3) {
+        return summa_make_error("set! - expects (set! name value)");
+    }
+    if (form->value[1].type != SummaSchemeSymbolType) {
+        return summa_make_error("set! - name must be a symbol");
+    }
+
+    SummaSchemeValue value;
+    SummaSchemeError err = summa_scheme_evaluate(env, form->value[2], &value);
+    if (err.had) {
+        return err;
+    }
+
+    /* assign, not set: mutate where the chain holds it, do not shadow. */
+    err = summa_scheme_environment_assign(env, form->value[1].value.symbol.value, value);
+    if (err.had) {
+        /* Rejected, so ownership never transferred. */
+        summa_scheme_value_free(&value);
+        return err;
+    }
+    *out = summa_scheme_unspecified();
+    return summa_success();
+}
+
+static SummaSchemeError
+summa_scheme_special_begin(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+    return summa_scheme_evaluate_sequence(env, form, 1, out);
+}
+
+/* The three flavours differ only in which environment the initializers see. */
+typedef enum {
+    /* `let`: initializers see the outer environment -- bindings are simultaneous. */
+    SUMMA_SCHEME_LET_PARALLEL,
+    /* `let*`: each initializer sees the bindings made before it. */
+    SUMMA_SCHEME_LET_SEQUENTIAL,
+    /* `letrec`: every name bound before any initializer runs, so the
+     * procedures defined can refer to each other. */
+    SUMMA_SCHEME_LET_RECURSIVE,
+} SummaSchemeLetKind;
+
+static SummaSchemeError summa_scheme_let_clause(const char*              name,
+                                                const SummaSchemeValue*  clause,
+                                                const char**             out_name,
+                                                const SummaSchemeValue** out_expression) {
+    if (clause->type != SummaSchemeListType || !clause->value.list.value || clause->value.list.value->length != 2 ||
+        clause->value.list.value->value[0].type != SummaSchemeSymbolType) {
+        snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - each binding must be (name value)", name);
+        return summa_make_error(ERROR_MESSAGE);
+    }
+    *out_name       = clause->value.list.value->value[0].value.symbol.value->value;
+    *out_expression = &clause->value.list.value->value[1];
+    return summa_success();
+}
+
+static SummaSchemeError summa_scheme_let(const char*                  name,
+                                         SummaSchemeLetKind           kind,
+                                         const SummaSchemeEnvironment env,
+                                         const SummaList              form,
+                                         SummaSchemeValue*            out) {
+    if (form->length < 3) {
+        snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - expects (%s ((name value) ...) body ...)", name, name);
+        return summa_make_error(ERROR_MESSAGE);
+    }
+    if (form->value[1].type != SummaSchemeListType) {
+        snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - bindings must be a list", name);
+        return summa_make_error(ERROR_MESSAGE);
+    }
+
+    const SummaList              clauses = form->value[1].value.list.value;
+    const SummaSchemeEnvironment frame   = summa_scheme_environment_make(env);
+    SummaSchemeError             err     = summa_success();
+
+    if (kind == SUMMA_SCHEME_LET_RECURSIVE) {
+        /* Names first, values second -- the gap is the point of letrec. */
+        for (size_t i = 0; clauses && i < clauses->length; i++) {
+            const char*             binding_name = nullptr;
+            const SummaSchemeValue* expression   = nullptr;
+            err = summa_scheme_let_clause(name, &clauses->value[i], &binding_name, &expression);
+            if (err.had) {
+                break;
+            }
+            summa_scheme_environment_set(
+                frame, summa_scheme_binding_make(summa_string_make(binding_name), summa_scheme_unspecified()));
+        }
+    }
+
+    for (size_t i = 0; !err.had && clauses && i < clauses->length; i++) {
+        const char*             binding_name = nullptr;
+        const SummaSchemeValue* expression   = nullptr;
+        err = summa_scheme_let_clause(name, &clauses->value[i], &binding_name, &expression);
+        if (err.had) {
+            break;
+        }
+
+        /* Parallel evaluates against the outer environment, so an initializer
+         * cannot see its siblings; the other two use the frame. */
+        SummaSchemeValue value;
+        err = summa_scheme_evaluate(kind == SUMMA_SCHEME_LET_PARALLEL ? env : frame, *expression, &value);
+        if (err.had) {
+            break;
+        }
+        summa_scheme_environment_set(frame, summa_scheme_binding_make(summa_string_make(binding_name), value));
+    }
+
+    if (!err.had) {
+        err = summa_scheme_evaluate_sequence(frame, form, 2, out);
+    }
+    summa_scheme_environment_free(frame);
+    return err;
+}
+
+static SummaSchemeError
+summa_scheme_special_let(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+    return summa_scheme_let("let", SUMMA_SCHEME_LET_PARALLEL, env, form, out);
+}
+
+static SummaSchemeError
+summa_scheme_special_let_star(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+    return summa_scheme_let("let*", SUMMA_SCHEME_LET_SEQUENTIAL, env, form, out);
+}
+
+static SummaSchemeError
+summa_scheme_special_letrec(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+    return summa_scheme_let("letrec", SUMMA_SCHEME_LET_RECURSIVE, env, form, out);
+}
+
+static SummaSchemeError
+summa_scheme_special_cond(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+    for (size_t i = 1; i < form->length; i++) {
+        const SummaSchemeValue clause = form->value[i];
+        if (clause.type != SummaSchemeListType || !clause.value.list.value || clause.value.list.value->length == 0) {
+            return summa_make_error("cond - each clause must be (test expression ...)");
+        }
+        const SummaList body = clause.value.list.value;
+
+        const bool is_else = body->value[0].type == SummaSchemeSymbolType &&
+                             strcmp(body->value[0].value.symbol.value->value, "else") == 0;
+        if (is_else) {
+            return summa_scheme_evaluate_sequence(env, body, 1, out);
+        }
+
+        SummaSchemeValue       test;
+        const SummaSchemeError err = summa_scheme_evaluate(env, body->value[0], &test);
+        if (err.had) {
+            return err;
+        }
+        if (!summa_scheme_truthy(&test)) {
+            summa_scheme_value_free(&test);
+            continue;
+        }
+        /* A clause that is nothing but a test yields the test's own value. */
+        if (body->length == 1) {
+            *out = test;
+            return summa_success();
+        }
+        summa_scheme_value_free(&test);
+        return summa_scheme_evaluate_sequence(env, body, 1, out);
+    }
+
+    /* No clause matched. */
+    *out = summa_scheme_unspecified();
+    return summa_success();
+}
+
+/* Both return the operand that decided them, not a boolean, and stop early --
+ * which is why neither can be a builtin. */
+static SummaSchemeError
+summa_scheme_special_and(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+    SummaSchemeValue result = summa_make_scheme_boolean(true);
+    for (size_t i = 1; i < form->length; i++) {
+        SummaSchemeValue       next;
+        const SummaSchemeError err = summa_scheme_evaluate(env, form->value[i], &next);
+        if (err.had) {
+            summa_scheme_value_free(&result);
+            return err;
+        }
+        summa_scheme_value_free(&result);
+        result = next;
+        if (!summa_scheme_truthy(&result)) {
+            break;
+        }
+    }
+    *out = result;
+    return summa_success();
+}
+
+static SummaSchemeError
+summa_scheme_special_or(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+    SummaSchemeValue result = summa_make_scheme_boolean(false);
+    for (size_t i = 1; i < form->length; i++) {
+        SummaSchemeValue       next;
+        const SummaSchemeError err = summa_scheme_evaluate(env, form->value[i], &next);
+        if (err.had) {
+            summa_scheme_value_free(&result);
+            return err;
+        }
+        summa_scheme_value_free(&result);
+        result = next;
+        if (summa_scheme_truthy(&result)) {
+            break;
+        }
+    }
+    *out = result;
+    return summa_success();
+}
+
+static SummaSchemeError summa_scheme_when_unless(const char*                  name,
+                                                 bool                         run_when_truthy,
+                                                 const SummaSchemeEnvironment env,
+                                                 const SummaList              form,
+                                                 SummaSchemeValue*            out) {
+    if (form->length < 2) {
+        snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - expects (%s test body ...)", name, name);
+        return summa_make_error(ERROR_MESSAGE);
+    }
+
+    SummaSchemeValue       test;
+    const SummaSchemeError err = summa_scheme_evaluate(env, form->value[1], &test);
+    if (err.had) {
+        return err;
+    }
+    const bool truthy = summa_scheme_truthy(&test);
+    summa_scheme_value_free(&test);
+
+    if (truthy != run_when_truthy) {
+        *out = summa_scheme_unspecified();
+        return summa_success();
+    }
+    return summa_scheme_evaluate_sequence(env, form, 2, out);
+}
+
+static SummaSchemeError
+summa_scheme_special_when(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+    return summa_scheme_when_unless("when", true, env, form, out);
+}
+
+static SummaSchemeError
+summa_scheme_special_unless(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+    return summa_scheme_when_unless("unless", false, env, form, out);
+}
+
+typedef struct {
+    const char*              name;
+    SummaSchemeSpecialFormFn fn;
+} SummaSchemeSpecialForm;
+
+/* The six above the line are irreducible. The rest are conveniences a macro
+ * expander could rewrite into them, and are cases here only because there is
+ * no define-syntax yet. */
+static const SummaSchemeSpecialForm SUMMA_SCHEME_SPECIAL_FORMS[] = {
+    {"quote", summa_scheme_special_quote},
+    {"if", summa_scheme_special_if},
+    {"define", summa_scheme_special_define},
+    {"lambda", summa_scheme_special_lambda},
+    {"set!", summa_scheme_special_set},
+    {"begin", summa_scheme_special_begin},
+
+    {"let", summa_scheme_special_let},
+    {"let*", summa_scheme_special_let_star},
+    {"letrec", summa_scheme_special_letrec},
+    {"cond", summa_scheme_special_cond},
+    {"and", summa_scheme_special_and},
+    {"or", summa_scheme_special_or},
+    {"when", summa_scheme_special_when},
+    {"unless", summa_scheme_special_unless},
+};
+
+static SummaSchemeSpecialFormFn summa_scheme_special_form_lookup(const char* name) {
+    const size_t count = sizeof(SUMMA_SCHEME_SPECIAL_FORMS) / sizeof(SUMMA_SCHEME_SPECIAL_FORMS[0]);
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(name, SUMMA_SCHEME_SPECIAL_FORMS[i].name) == 0) {
+            return SUMMA_SCHEME_SPECIAL_FORMS[i].fn;
+        }
+    }
+    return nullptr;
+}
+
+#pragma endregion Special forms
+
+SummaSchemeError summa_scheme_procedure_dispatch(SummaSchemeEnvironment env,
+                                                 SummaSchemeProcedure   proc,
+                                                 const SummaList        args,
+                                                 SummaSchemeValue*      out) {
+    /* No body means the table owns the behavior. */
     if (!proc.body) {
         return summa_scheme_procedure_dispatch_global(proc, args, out);
     }
-    return summa_make_error("NOT IMPLEMENTED - user-defined procedures");
+
+    const size_t expected = proc.bindings ? proc.bindings->length : 0;
+    if (expected != args->length) {
+        snprintf(ERROR_MESSAGE,
+                 ERROR_MESSAGE_LENGTH,
+                 "%s - expects %zu argument(s), got %zu",
+                 proc.name->value,
+                 expected,
+                 args->length);
+        return summa_make_error(ERROR_MESSAGE);
+    }
+
+    /* Lexical scoping: the parent is where the procedure was defined, not
+     * where it is called. The fallback only ever covers a builtin. */
+    const SummaSchemeEnvironment frame = summa_scheme_environment_make(proc.closure ? proc.closure : env);
+    for (size_t i = 0; i < expected; i++) {
+        /* The frame takes its own copy; the argument list is about to go. */
+        SummaSchemeValue argument;
+        summa_scheme_value_copy(&argument, &args->value[i]);
+        summa_scheme_environment_set(
+            frame, summa_scheme_binding_make(summa_string_make(proc.bindings->value[i].value->value), argument));
+    }
+
+    const SummaSchemeError err = summa_scheme_evaluate_sequence(frame, proc.body, 0, out);
+
+    /* Evaluation deep-copies, so the result survives the frame -- except for a
+     * procedure created here, whose closure handle this leaves dangling. See
+     * BUILTINS.md. */
+    summa_scheme_environment_free(frame);
+    return err;
 }
 
 #endif

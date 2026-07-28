@@ -31,17 +31,12 @@ static void free_symbol_list(SummaSchemeSymbolList symbols) {
 
 #define SCOPED_SYMBOL_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaSchemeSymbolList, var, init, free_symbol_list)
 
-/* A form owns every value pushed into it, and summa_scheme_value_free is
- * deliberately shallow -- so nested forms are drained here rather than losing
- * the strings their head symbols carry. */
+/* A form owns every value pushed into it. summa_scheme_value_free is deep, so
+ * it reaches nested forms on its own; what it cannot do is free the outer
+ * SummaList, which is a bare handle here rather than a value. */
 static void free_form(SummaList form) {
     for (size_t i = 0; i < form->length; i++) {
-        SummaSchemeValue* value = &form->value[i];
-        if (value->type == SummaSchemeListType) {
-            free_form(value->value.list.value);
-        } else {
-            summa_scheme_value_free(value);
-        }
+        summa_scheme_value_free(&form->value[i]);
     }
     summa_list_free(form);
 }
@@ -135,8 +130,9 @@ void test_scheme_evaluate_list() {
             SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
 
             /* `out` is an output parameter rather than something this scope
-             * made, so its inner list is still freed by hand. */
-            summa_list_free(out.value.list.value);
+             * made, so it is still released by hand -- but as a value, since
+             * the copy owns its elements outright. */
+            summa_scheme_value_free(&out);
         }
     }
 }
@@ -157,11 +153,10 @@ void test_scheme_evaluate_procedure() {
         SUMMA_TEST_ASSERT(!error.had);
         SUMMA_TEST_ASSERT_EQ(SummaSchemeProcedureType, out.type);
         SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
-        /* The copy's bindings share the original's strings, so only what the
-         * copy allocated for itself is released here. */
+        /* The copy owns its own binding list and its own parameter names, so
+         * releasing it cannot disturb the original. */
         SUMMA_TEST_ASSERT_NEQ(in.value.procedure.bindings, out.value.procedure.bindings);
-        summa_string_free(out.value.procedure.name);
-        summa_symbol_list_free(out.value.procedure.bindings);
+        summa_scheme_value_free(&out);
     }
 }
 
@@ -272,7 +267,7 @@ void test_scheme_evaluate_application_unbound_head() {
         SUMMA_TEST_ASSERT_EQ(SummaSchemeListType, out.type);
         SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
 
-        summa_list_free(out.value.list.value);
+        summa_scheme_value_free(&out);
     }
 }
 
@@ -318,7 +313,7 @@ void test_scheme_evaluate_vector() {
             SUMMA_TEST_ASSERT(!error.had);
             SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
 
-            summa_list_free(out.value.vector.value);
+            summa_scheme_value_free(&out);
         }
     }
 }
