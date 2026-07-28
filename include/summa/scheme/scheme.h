@@ -231,7 +231,21 @@ bool summa_scheme_truthy(const SummaSchemeValue* value);
 
 #pragma region REPL
 
-SummaSchemeError summa_scheme_read(const SummaSchemeEnvironment env, const char* inputText, SummaSchemeValue* out);
+/* Reads one datum from `input`.
+ *
+ * `rest`, when not null, is set past the datum and past any whitespace or
+ * comment following it, so it lands either on the next datum's first character
+ * or on the terminating NUL. That makes the driver loop `while (*cursor)`:
+ *
+ *     const char* cursor = line;
+ *     while (*cursor) {
+ *         err = summa_scheme_read(env, cursor, &cursor, &value);
+ *     }
+ *
+ * `*rest` is untouched on error. Input holding no datum at all is an error, so
+ * the loop above never calls in with nothing left to read. */
+SummaSchemeError
+summa_scheme_read(const SummaSchemeEnvironment env, const char* input, const char** rest, SummaSchemeValue* out);
 SummaSchemeError
 summa_scheme_evaluate(const SummaSchemeEnvironment env, const SummaSchemeValue in, SummaSchemeValue* out);
 
@@ -283,7 +297,8 @@ static SummaSchemeError         summa_scheme_evaluate_sequence(const SummaScheme
 #define summa_scheme_unspecified() summa_make_scheme_boolean(false)
 
 SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment env,
-                                   [[maybe_unused]] const char*                  inputText,
+                                   [[maybe_unused]] const char*                  input,
+                                   [[maybe_unused]] const char**                 rest,
                                    [[maybe_unused]] SummaSchemeValue*            out) {
     return summa_make_error("summa_scheme_read - NOT IMPLEMENTED");
 }
