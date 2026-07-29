@@ -141,6 +141,66 @@ void test_scheme_read_distinguishes_integer_from_floating() {
     assert_reads_floating("42.0", 42.0);
 }
 
+void test_scheme_read_integer_extremes() {
+    assert_reads_integer("9223372036854775807", INT64_MAX);
+    assert_reads_integer("-9223372036854775808", INT64_MIN);
+}
+
+/* Leading zeros are digits like any other -- there is no octal notation to
+ * confuse them with, so the value is the decimal one. */
+void test_scheme_read_integer_with_leading_zeros() {
+    assert_reads_integer("007", 7);
+    assert_reads_integer("-0", 0);
+}
+
+/* The digits on either side of the point are optional, but the point alone is
+ * not a number. */
+void test_scheme_read_floating_with_an_implicit_zero() {
+    assert_reads_floating(".5", 0.5);
+    assert_reads_floating("-.5", -0.5);
+    assert_reads_floating("+.5", 0.5);
+    assert_reads_floating("5.", 5.0);
+}
+
+/* A sign is part of a number only at the front, and only once. Anything else
+ * built out of signs is a symbol -- `++4.2` names something, it is not 4.2, and
+ * the reader is wrong either way if it errors instead:
+ *
+ *     scheme@(guile-user)> (symbol? '++4.2)
+ *     $1 = #t
+ */
+void test_scheme_read_repeated_sign_is_a_symbol() {
+    assert_reads_symbol("++4.2", "++4.2");
+    assert_reads_symbol("--7", "--7");
+    assert_reads_symbol("+-1", "+-1");
+    assert_reads_symbol("-+0.5", "-+0.5");
+}
+
+/* Same boundary from the other side: a sign leads a number only when digits or
+ * a point follow it. */
+void test_scheme_read_sign_before_a_non_digit_is_a_symbol() {
+    assert_reads_symbol("+foo", "+foo");
+    assert_reads_symbol("-x2", "-x2");
+}
+
+/* One point makes a float; a second one makes a symbol. */
+void test_scheme_read_repeated_decimal_point_is_a_symbol() {
+    assert_reads_symbol("4.2.1", "4.2.1");
+    assert_reads_symbol("1..2", "1..2");
+}
+
+/* `...` is the ellipsis of syntax-rules, so a run of points is a symbol even
+ * though a lone point is not. */
+void test_scheme_read_ellipsis_is_a_symbol() {
+    assert_reads_symbol("...", "...");
+}
+
+/* A bare point is the dotted-pair marker rather than a datum, so nothing comes
+ * back from reading one on its own. */
+void test_scheme_read_rejects_a_bare_decimal_point() {
+    assert_read_fails(".");
+}
+
 void test_scheme_read_boolean() {
     assert_reads_boolean(SUMMA_SCHEME_TRUE, true);
     assert_reads_boolean(SUMMA_SCHEME_FALSE, false);
@@ -567,6 +627,14 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_scheme_read_integer);
     SUMMA_TEST_RUN(test_scheme_read_floating);
     SUMMA_TEST_RUN(test_scheme_read_distinguishes_integer_from_floating);
+    SUMMA_TEST_RUN(test_scheme_read_integer_extremes);
+    SUMMA_TEST_RUN(test_scheme_read_integer_with_leading_zeros);
+    SUMMA_TEST_RUN(test_scheme_read_floating_with_an_implicit_zero);
+    SUMMA_TEST_RUN(test_scheme_read_repeated_sign_is_a_symbol);
+    SUMMA_TEST_RUN(test_scheme_read_sign_before_a_non_digit_is_a_symbol);
+    SUMMA_TEST_RUN(test_scheme_read_repeated_decimal_point_is_a_symbol);
+    SUMMA_TEST_RUN(test_scheme_read_ellipsis_is_a_symbol);
+    SUMMA_TEST_RUN(test_scheme_read_rejects_a_bare_decimal_point);
     SUMMA_TEST_RUN(test_scheme_read_boolean);
     SUMMA_TEST_RUN(test_scheme_read_character);
     SUMMA_TEST_RUN(test_scheme_read_named_character);
