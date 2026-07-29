@@ -307,6 +307,50 @@ bool summa_scheme_truthy(const SummaSchemeValue* value) {
     return !(value->type == SummaSchemeBooleanType && !value->value.boolean.value);
 }
 
+/* Renders a value short enough to sit inside an error message. Atoms print
+ * themselves; the containers name their type rather than dumping their
+ * contents, since the operator is what the reader needs to see. */
+static void summa_scheme_describe(const SummaSchemeValue* value, char* buffer, size_t size) {
+    switch (value->type) {
+    case SummaSchemeBooleanType: {
+        snprintf(buffer, size, "%s", value->value.boolean.value ? SUMMA_SCHEME_TRUE : SUMMA_SCHEME_FALSE);
+    } break;
+    case SummaSchemeCharacterType: {
+        snprintf(buffer, size, "#\\%c", value->value.character.value);
+    } break;
+    case SummaSchemeFloatingType: {
+        snprintf(buffer, size, "%f", value->value.floating.value);
+    } break;
+    case SummaSchemeIntegerType: {
+        snprintf(buffer, size, "%" PRId64, value->value.integer.value);
+    } break;
+    case SummaSchemeListType: {
+        snprintf(buffer, size, "a list");
+    } break;
+    case SummaSchemeProcedureType: {
+        snprintf(buffer, size, "#<procedure %s>", value->value.procedure.name->value);
+    } break;
+    case SummaSchemeStringType: {
+        snprintf(buffer, size, "\"%s\"", value->value.string.value->value);
+    } break;
+    case SummaSchemeSymbolType: {
+        snprintf(buffer, size, "%s", value->value.symbol.value->value);
+    } break;
+    case SummaSchemeVectorType: {
+        snprintf(buffer, size, "a vector");
+    } break;
+    }
+}
+
+#define SUMMA_SCHEME_DESCRIPTION_LENGTH 128
+
+static SummaSchemeError summa_scheme_wrong_type_to_apply(const SummaSchemeValue* operator_value) {
+    char described[SUMMA_SCHEME_DESCRIPTION_LENGTH];
+    summa_scheme_describe(operator_value, described, sizeof(described));
+    snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "Wrong type to apply: %s", described);
+    return summa_make_error(ERROR_MESSAGE);
+}
+
 static size_t SUMMA_SCHEME_DEPTH = 0;
 
 static SummaSchemeError
@@ -348,41 +392,51 @@ static SummaSchemeError summa_scheme_evaluate_inner([[maybe_unused]] const Summa
         *out = summa_make_scheme_integer(in.value.integer.value);
     } break;
     case SummaSchemeListType: {
+        /* A list in evaluated position is a combination, never data. `(1 2 3)`
+         * is an error, and the way to get the list itself is to quote it. */
         SummaList form = in.value.list.value;
-        if (form && form->length > 0) {
-            if (form->value[0].type == SummaSchemeSymbolType) {
-                /* Ahead of the binding lookup, deliberately. `if` routed
-                 * through the application path would evaluate both branches
-                 * and turn every recursive base case into a loop. */
-                const SummaSchemeSpecialFormFn special =
-                    summa_scheme_special_form_lookup(form->value[0].value.symbol.value->value);
-                if (special) {
-                    return special(env, form, out);
-                }
-
-                SummaSchemeBinding head;
-                SummaSchemeError   lookup = summa_scheme_environment_get(env, form->value[0].value.symbol, &head);
-                if (!lookup.had && head.value.type == SummaSchemeProcedureType) {
-                    return summa_scheme_apply(env, head.value.value.procedure, form, out);
-                }
-            } else if (form->value[0].type == SummaSchemeListType) {
-                /* `((lambda (x) x) 1)` -- the operator is an expression.
-                 * Anything that is not a procedure stays data. */
-                SummaSchemeValue       operator_value;
-                const SummaSchemeError err = summa_scheme_evaluate(env, form->value[0], &operator_value);
-                if (err.had) {
-                    return err;
-                }
-                if (operator_value.type == SummaSchemeProcedureType) {
-                    const SummaSchemeError applied =
-                        summa_scheme_apply(env, operator_value.value.procedure, form, out);
-                    summa_scheme_value_free(&operator_value);
-                    return applied;
-                }
-                summa_scheme_value_free(&operator_value);
-            }
+        if (!form || form->length == 0) {
+            return summa_make_error("Illegal empty combination: ()");
         }
-        return summa_scheme_value_copy(out, &in);
+
+        if (form->value[0].type == SummaSchemeSymbolType) {
+            /* Ahead of the binding lookup, deliberately. `if` routed through
+             * the application path would evaluate both branches and turn every
+             * recursive base case into a loop. */
+            const SummaSchemeSpecialFormFn special =
+                summa_scheme_special_form_lookup(form->value[0].value.symbol.value->value);
+            if (special) {
+                return special(env, form, out);
+            }
+
+            /* Resolved through the binding rather than by evaluating the
+             * symbol, which would deep-copy the procedure on every call. */
+            SummaSchemeBinding     head;
+            const SummaSchemeError lookup = summa_scheme_environment_get(env, form->value[0].value.symbol, &head);
+            if (lookup.had) {
+                return lookup;
+            }
+            if (head.value.type != SummaSchemeProcedureType) {
+                return summa_scheme_wrong_type_to_apply(&head.value);
+            }
+            return summa_scheme_apply(env, head.value.value.procedure, form, out);
+        }
+
+        /* Any other operator is an expression: `((lambda (x) x) 1)`, and also
+         * `(1 2 3)`, where the 1 evaluates to itself and then fails to apply. */
+        SummaSchemeValue operator_value;
+        SummaSchemeError err = summa_scheme_evaluate(env, form->value[0], &operator_value);
+        if (err.had) {
+            return err;
+        }
+        if (operator_value.type != SummaSchemeProcedureType) {
+            err = summa_scheme_wrong_type_to_apply(&operator_value);
+            summa_scheme_value_free(&operator_value);
+            return err;
+        }
+        err = summa_scheme_apply(env, operator_value.value.procedure, form, out);
+        summa_scheme_value_free(&operator_value);
+        return err;
     } break;
     case SummaSchemeProcedureType: {
         return summa_scheme_value_copy(out, &in);
@@ -391,26 +445,19 @@ static SummaSchemeError summa_scheme_evaluate_inner([[maybe_unused]] const Summa
         *out = summa_make_scheme_string(in.value.string.value->value);
     } break;
     case SummaSchemeSymbolType: {
-        SummaSchemeBinding binding;
-        SummaSchemeError   err = summa_scheme_environment_get(env, in.value.symbol, &binding);
+        /* A symbol in evaluated position is a variable reference, so an unbound
+         * one is an error rather than a value. Quoting is what yields the
+         * symbol itself. */
+        SummaSchemeBinding     binding;
+        const SummaSchemeError err = summa_scheme_environment_get(env, in.value.symbol, &binding);
         if (err.had) {
-            /* Unbound, so the symbol evaluates to itself and is interned into
-             * the environment on the way out.
-             *
-             * The name, the symbol bound to it, and the one returned are three
-             * separate strings on purpose -- the same reason the global `+`
-             * binding builds two. The environment frees a binding's value and
-             * its name independently, and the caller frees what it gets back,
-             * so any handle shared between those would be released twice. */
-            const char* name = in.value.symbol.value->value;
-            summa_scheme_environment_set(
-                env, summa_scheme_binding_make(summa_string_make(name), summa_make_scheme_symbol(name)));
+            return err;
         }
-        /* Either branch hands back a copy the caller owns: the binding's value
-         * stays the environment's. */
-        return summa_scheme_value_copy(out, err.had ? &in : &binding.value);
+        /* A copy the caller owns; the binding's value stays the environment's. */
+        return summa_scheme_value_copy(out, &binding.value);
     } break;
     case SummaSchemeVectorType: {
+        /* Self-evaluating, unlike a list. */
         return summa_scheme_value_copy(out, &in);
     } break;
     default: {
