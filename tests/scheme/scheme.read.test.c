@@ -122,43 +122,75 @@ static void assert_reads_and_prints_as(const char* input, const char* expected) 
 
 #pragma region atoms
 
-void test_scheme_read_integer() {
+/* The numbers get one case per input rather than a loop of assertions, so a
+ * failure names the literal that broke instead of the family it belongs to. */
+
+void test_scheme_read_integer_positive() {
     assert_reads_integer("42", 42);
+}
+
+void test_scheme_read_integer_zero() {
     assert_reads_integer("0", 0);
+}
+
+void test_scheme_read_integer_negative() {
     assert_reads_integer("-7", -7);
+}
+
+void test_scheme_read_integer_explicit_plus() {
     assert_reads_integer("+3", 3);
 }
 
-void test_scheme_read_floating() {
-    assert_reads_floating("3.5", 3.5);
-    assert_reads_floating("-0.5", -0.5);
-    assert_reads_floating("0.0", 0.0);
-}
-
-/* The decimal point is what decides the type; a bare digit run stays exact. */
-void test_scheme_read_distinguishes_integer_from_floating() {
-    assert_reads_integer("42", 42);
-    assert_reads_floating("42.0", 42.0);
-}
-
-void test_scheme_read_integer_extremes() {
+void test_scheme_read_integer_max() {
     assert_reads_integer("9223372036854775807", INT64_MAX);
+}
+
+void test_scheme_read_integer_min() {
     assert_reads_integer("-9223372036854775808", INT64_MIN);
 }
 
 /* Leading zeros are digits like any other -- there is no octal notation to
  * confuse them with, so the value is the decimal one. */
-void test_scheme_read_integer_with_leading_zeros() {
+void test_scheme_read_integer_leading_zeros() {
     assert_reads_integer("007", 7);
+}
+
+void test_scheme_read_integer_negative_zero() {
     assert_reads_integer("-0", 0);
 }
 
-/* The digits on either side of the point are optional, but the point alone is
- * not a number. */
-void test_scheme_read_floating_with_an_implicit_zero() {
+void test_scheme_read_floating_positive() {
+    assert_reads_floating("3.5", 3.5);
+}
+
+void test_scheme_read_floating_negative() {
+    assert_reads_floating("-0.5", -0.5);
+}
+
+void test_scheme_read_floating_zero() {
+    assert_reads_floating("0.0", 0.0);
+}
+
+/* The decimal point is what decides the type: `42` is exact and `42.0` is not,
+ * even though they name the same quantity. */
+void test_scheme_read_floating_whole_number() {
+    assert_reads_floating("42.0", 42.0);
+}
+
+/* The digits on either side of the point are optional. */
+void test_scheme_read_floating_leading_point() {
     assert_reads_floating(".5", 0.5);
+}
+
+void test_scheme_read_floating_negative_leading_point() {
     assert_reads_floating("-.5", -0.5);
+}
+
+void test_scheme_read_floating_explicit_plus_leading_point() {
     assert_reads_floating("+.5", 0.5);
+}
+
+void test_scheme_read_floating_trailing_point() {
     assert_reads_floating("5.", 5.0);
 }
 
@@ -169,23 +201,38 @@ void test_scheme_read_floating_with_an_implicit_zero() {
  *     scheme@(guile-user)> (symbol? '++4.2)
  *     $1 = #t
  */
-void test_scheme_read_repeated_sign_is_a_symbol() {
+void test_scheme_read_double_plus_is_a_symbol() {
     assert_reads_symbol("++4.2", "++4.2");
+}
+
+void test_scheme_read_double_minus_is_a_symbol() {
     assert_reads_symbol("--7", "--7");
+}
+
+void test_scheme_read_plus_then_minus_is_a_symbol() {
     assert_reads_symbol("+-1", "+-1");
+}
+
+void test_scheme_read_minus_then_plus_is_a_symbol() {
     assert_reads_symbol("-+0.5", "-+0.5");
 }
 
 /* Same boundary from the other side: a sign leads a number only when digits or
  * a point follow it. */
-void test_scheme_read_sign_before_a_non_digit_is_a_symbol() {
+void test_scheme_read_plus_before_a_letter_is_a_symbol() {
     assert_reads_symbol("+foo", "+foo");
+}
+
+void test_scheme_read_minus_before_a_letter_is_a_symbol() {
     assert_reads_symbol("-x2", "-x2");
 }
 
 /* One point makes a float; a second one makes a symbol. */
-void test_scheme_read_repeated_decimal_point_is_a_symbol() {
+void test_scheme_read_separated_decimal_points_is_a_symbol() {
     assert_reads_symbol("4.2.1", "4.2.1");
+}
+
+void test_scheme_read_adjacent_decimal_points_is_a_symbol() {
     assert_reads_symbol("1..2", "1..2");
 }
 
@@ -251,6 +298,9 @@ void test_scheme_read_operator_symbol() {
 /* A lone sign is a symbol; a sign followed by digits is a number. */
 void test_scheme_read_sign_alone_is_a_symbol() {
     assert_reads_symbol("-", "-");
+}
+
+void test_scheme_read_sign_then_digit_is_an_integer() {
     assert_reads_integer("-1", -1);
 }
 
@@ -624,17 +674,35 @@ void test_scheme_read_and_print_round_trip() {
 int main(int argc, char** argv) {
     summa_test_begin("scheme.read", argc, argv);
 
-    SUMMA_TEST_RUN(test_scheme_read_integer);
-    SUMMA_TEST_RUN(test_scheme_read_floating);
-    SUMMA_TEST_RUN(test_scheme_read_distinguishes_integer_from_floating);
-    SUMMA_TEST_RUN(test_scheme_read_integer_extremes);
-    SUMMA_TEST_RUN(test_scheme_read_integer_with_leading_zeros);
-    SUMMA_TEST_RUN(test_scheme_read_floating_with_an_implicit_zero);
-    SUMMA_TEST_RUN(test_scheme_read_repeated_sign_is_a_symbol);
-    SUMMA_TEST_RUN(test_scheme_read_sign_before_a_non_digit_is_a_symbol);
-    SUMMA_TEST_RUN(test_scheme_read_repeated_decimal_point_is_a_symbol);
+    SUMMA_TEST_RUN(test_scheme_read_integer_positive);
+    SUMMA_TEST_RUN(test_scheme_read_integer_zero);
+    SUMMA_TEST_RUN(test_scheme_read_integer_negative);
+    SUMMA_TEST_RUN(test_scheme_read_integer_explicit_plus);
+    SUMMA_TEST_RUN(test_scheme_read_integer_max);
+    SUMMA_TEST_RUN(test_scheme_read_integer_min);
+    SUMMA_TEST_RUN(test_scheme_read_integer_leading_zeros);
+    SUMMA_TEST_RUN(test_scheme_read_integer_negative_zero);
+
+    SUMMA_TEST_RUN(test_scheme_read_floating_positive);
+    SUMMA_TEST_RUN(test_scheme_read_floating_negative);
+    SUMMA_TEST_RUN(test_scheme_read_floating_zero);
+    SUMMA_TEST_RUN(test_scheme_read_floating_whole_number);
+    SUMMA_TEST_RUN(test_scheme_read_floating_leading_point);
+    SUMMA_TEST_RUN(test_scheme_read_floating_negative_leading_point);
+    SUMMA_TEST_RUN(test_scheme_read_floating_explicit_plus_leading_point);
+    SUMMA_TEST_RUN(test_scheme_read_floating_trailing_point);
+
+    SUMMA_TEST_RUN(test_scheme_read_double_plus_is_a_symbol);
+    SUMMA_TEST_RUN(test_scheme_read_double_minus_is_a_symbol);
+    SUMMA_TEST_RUN(test_scheme_read_plus_then_minus_is_a_symbol);
+    SUMMA_TEST_RUN(test_scheme_read_minus_then_plus_is_a_symbol);
+    SUMMA_TEST_RUN(test_scheme_read_plus_before_a_letter_is_a_symbol);
+    SUMMA_TEST_RUN(test_scheme_read_minus_before_a_letter_is_a_symbol);
+    SUMMA_TEST_RUN(test_scheme_read_separated_decimal_points_is_a_symbol);
+    SUMMA_TEST_RUN(test_scheme_read_adjacent_decimal_points_is_a_symbol);
     SUMMA_TEST_RUN(test_scheme_read_ellipsis_is_a_symbol);
     SUMMA_TEST_RUN(test_scheme_read_rejects_a_bare_decimal_point);
+
     SUMMA_TEST_RUN(test_scheme_read_boolean);
     SUMMA_TEST_RUN(test_scheme_read_character);
     SUMMA_TEST_RUN(test_scheme_read_named_character);
@@ -643,6 +711,7 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_scheme_read_symbol);
     SUMMA_TEST_RUN(test_scheme_read_operator_symbol);
     SUMMA_TEST_RUN(test_scheme_read_sign_alone_is_a_symbol);
+    SUMMA_TEST_RUN(test_scheme_read_sign_then_digit_is_an_integer);
 
     SUMMA_TEST_RUN(test_scheme_read_empty_list);
     SUMMA_TEST_RUN(test_scheme_read_flat_list);
