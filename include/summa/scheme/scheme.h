@@ -296,10 +296,126 @@ static SummaSchemeError         summa_scheme_evaluate_sequence(const SummaScheme
 /* The value R7RS leaves unspecified: `(if #f #f)`, `set!`, `display`. */
 #define summa_scheme_unspecified() summa_make_scheme_boolean(false)
 
+typedef enum {
+    SummaSchemeReadModeInitial,
+    SummaSchemeReadModeMinus,
+    SummaSchemeReadModePlus,
+    SummaSchemeReadModeInteger,
+    SummaSchemeReadModeFloating,
+    SummaSchemeReadModePeriod,
+} SummaSchemeReadMode;
+
+#include <ctype.h>
+
 SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment env,
                                    [[maybe_unused]] const char*                  input,
                                    [[maybe_unused]] const char**                 rest,
                                    [[maybe_unused]] SummaSchemeValue*            out) {
+    char                c     = '\0';
+    size_t              i     = 0;
+    SummaSchemeReadMode mode  = SummaSchemeReadModeInitial;
+    SummaString         token = summa_string_make_empty();
+    for (c = input[0]; c; c = input[++i]) {
+        if (rest) {
+            *rest = input + i;
+        }
+        switch (c) {
+        case '(': {
+            return summa_make_error("summa_scheme_read - ( character not yet handled");
+        } break;
+        case ')': {
+            return summa_make_error("summa_scheme_read - ) character not yet handled");
+        } break;
+
+        case '\'': {
+            return summa_make_error("summa_scheme_read - ' character not yet handled");
+        } break;
+        case ' ': {
+            return summa_make_error("summa_scheme_read - ' ' character not yet handled");
+        } break;
+        case '+': {
+            switch (mode) {
+            case SummaSchemeReadModeInitial: {
+                mode = SummaSchemeReadModePlus;
+            } break;
+            default: {
+                return summa_make_error("summa_scheme_read - mode not yet handled for + character");
+            }
+            }
+        } break;
+        case '-': {
+            switch (mode) {
+            case SummaSchemeReadModeInitial: {
+                mode = SummaSchemeReadModeMinus;
+            } break;
+            default: {
+                return summa_make_error("summa_scheme_read - mode not yet handled for - character");
+            }
+            }
+        } break;
+        case '.': {
+            switch (mode) {
+            case SummaSchemeReadModeInitial: {
+                mode = SummaSchemeReadModePeriod;
+            } break;
+            case SummaSchemeReadModeInteger: {
+                mode = SummaSchemeReadModeFloating;
+            } break;
+            default: {
+                return summa_make_error("summa_scheme_read - mode not yet handled for . character");
+            }
+            }
+        } break;
+        default: {
+            if (isdigit(c)) {
+                switch (mode) {
+                case SummaSchemeReadModeInitial: {
+                    mode = SummaSchemeReadModeInteger;
+                } break;
+                case SummaSchemeReadModePlus: {
+                    mode = SummaSchemeReadModeInteger;
+                } break;
+                case SummaSchemeReadModeMinus: {
+                    mode = SummaSchemeReadModeInteger;
+                } break;
+                case SummaSchemeReadModeInteger: {
+                    mode = SummaSchemeReadModeInteger;
+                } break;
+                case SummaSchemeReadModeFloating: {
+                    mode = SummaSchemeReadModeFloating;
+                } break;
+                default: {
+                    return summa_make_error("summa_scheme_read - isdigit character not yet handled");
+                }
+                }
+            } else {
+                return summa_make_error("summa_scheme_read - non-special character not yet handled");
+            }
+        } break;
+        }
+        if (c) {
+            summa_string_push(token, c);
+        }
+    }
+    // summa_scheme_read_handle_token_finish:
+    switch (mode) {
+    case SummaSchemeReadModeInteger: {
+        int64_t value = atoll(token->value);
+        *out          = summa_make_scheme_integer(value);
+        return summa_success();
+    }
+    case SummaSchemeReadModeFloating: {
+        double value = atof(token->value);
+        *out         = summa_make_scheme_floating(value);
+        return summa_success();
+    }
+    default: {
+        return summa_make_error("summa_scheme_read - UNREACHABLE");
+    }
+    }
+    if (rest) {
+        *rest = input + i;
+    }
     return summa_make_error("summa_scheme_read - NOT IMPLEMENTED");
 }
 
