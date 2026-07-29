@@ -298,11 +298,12 @@ static SummaSchemeError         summa_scheme_evaluate_sequence(const SummaScheme
 
 typedef enum {
     SummaSchemeReadModeInitial,
-    SummaSchemeReadModeMinus,
     SummaSchemeReadModePlus,
+    SummaSchemeReadModeMinus,
+    SummaSchemeReadModePeriod,
     SummaSchemeReadModeInteger,
     SummaSchemeReadModeFloating,
-    SummaSchemeReadModePeriod,
+    SummaSchemeReadModeSymbol,
 } SummaSchemeReadMode;
 
 #include <ctype.h>
@@ -319,79 +320,96 @@ SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment
         if (rest) {
             *rest = input + i;
         }
-        switch (c) {
-        case '(': {
-            return summa_make_error("summa_scheme_read - ( character not yet handled");
-        } break;
-        case ')': {
-            return summa_make_error("summa_scheme_read - ) character not yet handled");
-        } break;
 
-        case '\'': {
-            return summa_make_error("summa_scheme_read - ' character not yet handled");
-        } break;
-        case ' ': {
-            return summa_make_error("summa_scheme_read - ' ' character not yet handled");
-        } break;
-        case '+': {
-            switch (mode) {
-            case SummaSchemeReadModeInitial: {
+        switch (mode) {
+        case SummaSchemeReadModeInitial: {
+            switch (c) {
+            case '+': {
                 mode = SummaSchemeReadModePlus;
             } break;
-            default: {
-                return summa_make_error("summa_scheme_read - mode not yet handled for + character");
-            }
-            }
-        } break;
-        case '-': {
-            switch (mode) {
-            case SummaSchemeReadModeInitial: {
+            case '-': {
                 mode = SummaSchemeReadModeMinus;
             } break;
-            default: {
-                return summa_make_error("summa_scheme_read - mode not yet handled for - character");
-            }
-            }
-        } break;
-        case '.': {
-            switch (mode) {
-            case SummaSchemeReadModeInitial: {
-                mode = SummaSchemeReadModePeriod;
-            } break;
-            case SummaSchemeReadModeInteger: {
+            case '.': {
                 mode = SummaSchemeReadModeFloating;
             } break;
             default: {
-                return summa_make_error("summa_scheme_read - mode not yet handled for . character");
+                if (isdigit(c)) {
+                    mode = SummaSchemeReadModeInteger;
+                } else if (isalpha(c)) {
+                    mode = SummaSchemeReadModeSymbol;
+                } else {
+                    return summa_make_error(
+                        "summa_scheme_read - SummaSchemeReadModeInitial character not yet handled");
+                }
+            }
+            }
+        } break;
+        case SummaSchemeReadModePlus: {
+            switch (c) {
+            case '.': {
+                mode = SummaSchemeReadModeFloating;
+            } break;
+            default: {
+                if (isdigit(c)) {
+                    mode = SummaSchemeReadModeInteger;
+                    break;
+                }
+                return summa_make_error("summa_scheme_read - SummaSchemeReadModePlus character not yet handled");
+            }
+            }
+        } break;
+        case SummaSchemeReadModeMinus: {
+            switch (c) {
+            case '.': {
+                mode = SummaSchemeReadModeFloating;
+            } break;
+            default: {
+                if (isdigit(c)) {
+                    mode = SummaSchemeReadModeInteger;
+                    break;
+                }
+                return summa_make_error("summa_scheme_read - SummaSchemeReadModeMinus character not yet handled");
+            }
+            }
+        } break;
+        case SummaSchemeReadModePeriod: {
+            switch (c) {
+            default: {
+                if (isdigit(c)) {
+                    mode = SummaSchemeReadModeFloating;
+                    break;
+                }
+                return summa_make_error("summa_scheme_read - SummaSchemeReadModePeriod character not yet handled");
+            }
+            }
+        } break;
+        case SummaSchemeReadModeInteger: {
+            switch (c) {
+            case '.': {
+                mode = SummaSchemeReadModeFloating;
+            } break;
+            default: {
+                if (isdigit(c)) {
+                    break;
+                }
+                return summa_make_error("summa_scheme_read - SummaSchemeReadModeInteger character not yet handled");
+            }
+            }
+        } break;
+        case SummaSchemeReadModeFloating: {
+            switch (c) {
+            default: {
+                if (isdigit(c)) {
+                    break;
+                }
+                return summa_make_error("summa_scheme_read - SummaSchemeReadModeFloating character not yet handled");
             }
             }
         } break;
         default: {
-            if (isdigit(c)) {
-                switch (mode) {
-                case SummaSchemeReadModeInitial: {
-                    mode = SummaSchemeReadModeInteger;
-                } break;
-                case SummaSchemeReadModePlus: {
-                    mode = SummaSchemeReadModeInteger;
-                } break;
-                case SummaSchemeReadModeMinus: {
-                    mode = SummaSchemeReadModeInteger;
-                } break;
-                case SummaSchemeReadModeInteger: {
-                    mode = SummaSchemeReadModeInteger;
-                } break;
-                case SummaSchemeReadModeFloating: {
-                    mode = SummaSchemeReadModeFloating;
-                } break;
-                default: {
-                    return summa_make_error("summa_scheme_read - isdigit character not yet handled");
-                }
-                }
-            } else {
-                return summa_make_error("summa_scheme_read - non-special character not yet handled");
-            }
-        } break;
+            return summa_make_error("summa_scheme_read - unhandle read mode");
+        }
         }
         if (c) {
             summa_string_push(token, c);
