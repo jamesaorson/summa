@@ -135,11 +135,12 @@ void test_scheme_if_does_not_evaluate_the_untaken_consequent() {
     }
 }
 
-/* Only #f is false: 0 and the empty list are both true. */
+/* Only #f is false: 0 and the empty list are both true. The empty list has to
+ * be quoted, since `()` on its own is not an expression. */
 void test_scheme_if_treats_every_non_false_value_as_true() {
     SCOPED_GLOBAL_ENV(env) {
         assert_evaluates_to_integer(env, LIST(SYM("if"), INT(0), INT(1), INT(2)), 1);
-        assert_evaluates_to_integer(env, LIST(SYM("if"), EMPTY_LIST(), INT(1), INT(2)), 1);
+        assert_evaluates_to_integer(env, LIST(SYM("if"), LIST(SYM("quote"), EMPTY_LIST()), INT(1), INT(2)), 1);
     }
 }
 
@@ -340,13 +341,9 @@ void test_scheme_let_bindings_do_not_outlive_the_body() {
     SCOPED_GLOBAL_ENV(env) {
         eval_ok(env, LIST(SYM("let"), LIST(LIST(SYM("scoped"), INT(1))), SYM("scoped")));
 
-        /* An unbound symbol evaluates to itself, so escaping the frame shows up
-         * as a symbol rather than an error. */
-        SummaSchemeValue       out = {};
-        const SummaSchemeError err = eval(env, SYM("scoped"), &out);
-        SUMMA_TEST_ASSERT(!err.had);
-        SUMMA_TEST_ASSERT_EQ(SummaSchemeSymbolType, out.type);
-        summa_scheme_value_free(&out);
+        /* The name is gone with the frame, so referencing it afterwards is an
+         * unbound variable. */
+        assert_evaluation_fails(env, SYM("scoped"));
     }
 }
 

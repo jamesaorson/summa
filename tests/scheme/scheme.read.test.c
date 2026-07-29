@@ -502,6 +502,55 @@ void test_scheme_read_result_evaluates_a_definition_and_a_call() {
     }
 }
 
+/* Reading and evaluating fail independently. `(1 2 3)` is a perfectly good
+ * datum and a bad expression, so the reader must accept it and leave the
+ * complaint to evaluation:
+ *
+ *     scheme@(guile-user)> (1 2 3)
+ *     Wrong type to apply: 1
+ */
+void test_scheme_read_accepts_what_evaluation_rejects() {
+    SCOPED_GLOBAL_ENV(env) {
+        SummaSchemeValue       form = {};
+        const SummaSchemeError err  = summa_scheme_read(env, "(1 2 3)", nullptr, &form);
+        SUMMA_TEST_ASSERT(!err.had);
+
+        if (!err.had) {
+            SUMMA_TEST_ASSERT_EQ(SummaSchemeListType, form.type);
+
+            SummaSchemeValue       result   = {};
+            const SummaSchemeError eval_err = summa_scheme_evaluate(env, form, &result);
+            SUMMA_TEST_ASSERT(eval_err.had);
+            SUMMA_TEST_ASSERT_EQ_STR("Wrong type to apply: 1", eval_err.message);
+
+            summa_scheme_value_free(&result);
+            summa_scheme_value_free(&form);
+        }
+    }
+}
+
+/* Quoting is what turns the same text into data. */
+void test_scheme_read_quoted_list_evaluates_to_itself() {
+    SCOPED_GLOBAL_ENV(env) {
+        SummaSchemeValue       form = {};
+        const SummaSchemeError err  = summa_scheme_read(env, "'(1 2 3)", nullptr, &form);
+        SUMMA_TEST_ASSERT(!err.had);
+
+        if (!err.had) {
+            SummaSchemeValue       result   = {};
+            const SummaSchemeError eval_err = summa_scheme_evaluate(env, form, &result);
+            SUMMA_TEST_ASSERT(!eval_err.had);
+            SUMMA_TEST_ASSERT_EQ(SummaSchemeListType, result.type);
+            if (result.type == SummaSchemeListType) {
+                SUMMA_TEST_ASSERT_EQ(3, result.value.list.value->length);
+            }
+
+            summa_scheme_value_free(&result);
+            summa_scheme_value_free(&form);
+        }
+    }
+}
+
 /* Printing what was read gives back the source, which is the property that
  * catches a reader quietly dropping or reordering structure. */
 void test_scheme_read_and_print_round_trip() {
@@ -559,6 +608,8 @@ int main(int argc, char** argv) {
 
     SUMMA_TEST_RUN(test_scheme_read_result_evaluates);
     SUMMA_TEST_RUN(test_scheme_read_result_evaluates_a_definition_and_a_call);
+    SUMMA_TEST_RUN(test_scheme_read_accepts_what_evaluation_rejects);
+    SUMMA_TEST_RUN(test_scheme_read_quoted_list_evaluates_to_itself);
     SUMMA_TEST_RUN(test_scheme_read_and_print_round_trip);
 
     return summa_test_end();
