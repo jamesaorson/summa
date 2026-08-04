@@ -15,7 +15,6 @@
  * Iterations: 100, counting down through the squares. Within the depth budget,
  * though only just. */
 void test_scheme_euler_006_sum_square_difference() {
-    SUMMA_TEST_TODO("needs the `>`, `-`, `*` and `quotient` builtins");
     assert_euler_answer(EULER_PRELUDE "(define (sum-of-squares n acc)"
                                       "  (if (> n 0) (sum-of-squares (- n 1) (+ acc (* n n))) acc))"
                                       "(define (problem6 count)"

@@ -19,7 +19,6 @@
  * Iterations: at most 22, m from sqrt(500) down. Within the depth budget --
  * the one "search" problem that is, because Euclid replaces the search. */
 void test_scheme_euler_009_special_pythagorean_triplet() {
-    SUMMA_TEST_TODO("needs the `<`, `=`, `modulo`, `quotient`, `-`, `*` and `>` builtins");
     assert_euler_answer(EULER_PRELUDE "(define (euclid-pair target m)"
                                       "  (cond ((< m 1) 0)"
                                       "        ((= 0 (modulo target m))"

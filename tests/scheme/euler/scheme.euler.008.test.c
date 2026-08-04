@@ -20,8 +20,7 @@
  * Iterations: ~13,000, thirteen multiplications across 988 windows. Needs
  * tail calls and string procedures. */
 void test_scheme_euler_008_largest_product_in_a_series() {
-    SUMMA_TEST_TODO("needs the string builtins `string-length`, `string-ref` and `char->integer`, then tail calls for "
-                    "~13k iterations");
+    SUMMA_TEST_TODO("needs tail calls for ~13k iterations");
     assert_euler_answer(EULER_PRELUDE "(define series "
                                       "\"73167176531330624919225119674426574742355349194934"
                                       "96983520312774506326239578318016984801869478851843"

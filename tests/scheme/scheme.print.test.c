@@ -55,15 +55,76 @@ void test_scheme_print_boolean() {
     }
 }
 
+/* `write` output has to read back as source, so a character carries its `#\`
+ * prefix -- the bare glyph is `display`. */
 void test_scheme_print_character() {
     for (unsigned int i = 0; i < 128; i++) {
         const char c = (char)i;
+        /* The three the reader spells by name are the three whose glyph would
+         * not survive the round trip. */
+        if (c == ' ' || c == '\n' || c == '\t') {
+            continue;
+        }
+        char expected[4] = {'#', '\\', c, '\0'};
         SUMMA_TEST_SCOPED_FILE(f) {
-            SummaSchemeValue value = summa_make_scheme_character(c);
-            SummaSchemeError error = summa_scheme_print(value, f.file);
+            const SummaSchemeValue value = summa_make_scheme_character(c);
+            const SummaSchemeError error = summa_scheme_print(value, f.file);
+            SUMMA_TEST_ASSERT(!error.had);
+            SUMMA_TEST_ASSERT_FILE_EQ_STR(f, expected);
+        }
+    }
+}
+
+void test_scheme_print_character_names_the_three_the_reader_knows() {
+    const struct {
+        char        character;
+        const char* written;
+    } cases[] = {
+        {' ', "#\\space"},
+        {'\n', "#\\newline"},
+        {'\t', "#\\tab"},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        SUMMA_TEST_SCOPED_FILE(f) {
+            const SummaSchemeValue value = summa_make_scheme_character(cases[i].character);
+            const SummaSchemeError error = summa_scheme_print(value, f.file);
+            SUMMA_TEST_ASSERT(!error.had);
+            SUMMA_TEST_ASSERT_FILE_EQ_STR(f, cases[i].written);
+        }
+    }
+}
+
+/* `display` is the other half of the split: the character itself in the
+ * stream, so displaying a newline breaks the line rather than spelling it. */
+void test_scheme_display_character_is_the_glyph_itself() {
+    for (unsigned int i = 0; i < 128; i++) {
+        const char c = (char)i;
+        SUMMA_TEST_SCOPED_FILE(f) {
+            const SummaSchemeValue value = summa_make_scheme_character(c);
+            const SummaSchemeError error = summa_scheme_display(value, f.file);
             SUMMA_TEST_ASSERT(!error.had);
             SUMMA_TEST_ASSERT_FILE_EQ_CHAR(f, c);
         }
+    }
+}
+
+/* A character nested in a container follows the same rule as a string does --
+ * the style reaches all the way down rather than stopping at the top level. */
+void test_scheme_print_character_inside_a_list() {
+    SummaSchemeValue values[2] = {
+        summa_make_scheme_character('a'),
+        summa_make_scheme_character(' '),
+    };
+    SUMMA_TEST_SCOPED_FILE(written)
+    SUMMA_TEST_SCOPED_FILE(displayed)
+    SCOPED_LIST(list, summa_list_make(values, sizeof(values) / sizeof(values[0]))) {
+        const SummaSchemeValue value = summa_make_scheme_list(list);
+
+        SUMMA_TEST_ASSERT(!summa_scheme_print(value, written.file).had);
+        SUMMA_TEST_ASSERT_FILE_EQ_STR(written, "(#\\a #\\space)");
+
+        SUMMA_TEST_ASSERT(!summa_scheme_display(value, displayed.file).had);
+        SUMMA_TEST_ASSERT_FILE_EQ_STR(displayed, "(a  )");
     }
 }
 
@@ -184,6 +245,9 @@ int main(int argc, char** argv) {
 
     SUMMA_TEST_RUN(test_scheme_print_boolean);
     SUMMA_TEST_RUN(test_scheme_print_character);
+    SUMMA_TEST_RUN(test_scheme_print_character_names_the_three_the_reader_knows);
+    SUMMA_TEST_RUN(test_scheme_display_character_is_the_glyph_itself);
+    SUMMA_TEST_RUN(test_scheme_print_character_inside_a_list);
     SUMMA_TEST_RUN(test_scheme_print_floating);
     SUMMA_TEST_RUN(test_scheme_print_integer);
     SUMMA_TEST_RUN(test_scheme_print_list);

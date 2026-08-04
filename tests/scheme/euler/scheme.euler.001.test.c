@@ -12,10 +12,8 @@
 /* Problem 1 -- the multiples of 3 or 5 below 1000.
  *
  * Iterations: none. Inclusion-exclusion over three closed forms, so this is
- * the one problem that needs no recursion at all and is blocked on builtins
- * alone. */
+ * the one problem that needs no recursion at all. */
 void test_scheme_euler_001_multiples_of_3_and_5() {
-    SUMMA_TEST_TODO("needs the `-`, `*` and `quotient` builtins");
     assert_euler_answer(EULER_PRELUDE "(define (problem1 limit)"
                                       "  (- (+ (partial-sum limit 3) (partial-sum limit 5))"
                                       "     (partial-sum limit 15)))"

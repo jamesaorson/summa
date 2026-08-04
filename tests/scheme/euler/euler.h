@@ -18,7 +18,7 @@
  *     #include <summa/string/string.h>
  *     #include "euler.h"
  *
- * README.md covers what these suites are for, why every one of them is red,
+ * README.md covers what these suites are for, why the ones still red are red,
  * and where they depart from daybreak. SPOILER WARNING applies to the whole
  * directory: these are Project Euler answers.
  */
