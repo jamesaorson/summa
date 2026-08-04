@@ -18,6 +18,8 @@
  *
  * Iterations: ~810,000, every pair in 100..999. Needs tail calls. */
 void test_scheme_euler_004_largest_palindrome_product() {
+    SUMMA_TEST_TODO(
+        "needs the `<`, `-`, `*`, `=`, `quotient` and `modulo` builtins, then tail calls for ~810k iterations");
     assert_euler_answer(EULER_PRELUDE
                         "(define (reverse-number n acc)"
                         "  (if (= n 0) acc (reverse-number (quotient n 10) (+ (* acc 10) (modulo n 10)))))"

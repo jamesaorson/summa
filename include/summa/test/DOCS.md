@@ -62,8 +62,9 @@ register one CTest test per case instead of one per executable.
 #### `int summa_test_end(void)`
 
 Prints a pass/fail summary. Returns `0` if every test passed, `1` otherwise.
-Pass the return value directly to `return` from `main`. In `--list` mode, prints
-nothing and always returns `0`.
+Tests marked `SUMMA_TEST_TODO` are counted and reported separately and do not
+affect the return value. Pass the return value directly to `return` from
+`main`. In `--list` mode, prints nothing and always returns `0`.
 
 ### Running tests
 
@@ -71,11 +72,32 @@ nothing and always returns `0`.
 
 In list mode, prints `fn`'s name and does nothing else. If a filter is active
 and doesn't match `fn`, skips it silently. Otherwise calls `fn()`, then records
-it as passed or failed based on whether any assertion inside it fired, and
-prints a one-line result.
+it as passed, failed or TODO based on whether any assertion inside it fired and
+whether the case marked itself, and prints a one-line result.
 
 All assertions in a test function are always evaluated — there is no early exit
 on the first failure.
+
+### Known-failing tests
+
+#### `SUMMA_TEST_TODO(reason)`
+
+Marks the running case as known-failing for `reason`, letting a specification
+written ahead of its implementation live in the tree without holding CI red.
+Call it as the case's first statement, before any assertion can fire.
+
+| Case is…              | Reported as                       | Counts toward   |
+| --------------------- | --------------------------------- | --------------- |
+| marked, and fails     | `TODO <name> (<reason>)`          | `tests_todo`    |
+| marked, and passes    | `FAIL <name> (drop the mark)`     | `tests_failed`  |
+| unmarked, and fails   | `FAIL <name>`                     | `tests_failed`  |
+
+A marked case that *passes* is a failure on purpose: the gap it stood in for
+has closed, so the marker should come off. That is what makes marking better
+than deleting — the suite reports when the work landed.
+
+Assertions inside a marked case print `note:` rather than `error:`, so tooling
+that highlights errors leaves known gaps alone while still linking to them.
 
 ### Assertions
 

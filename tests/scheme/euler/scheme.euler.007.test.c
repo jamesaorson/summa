@@ -14,6 +14,7 @@
  * Iterations: millions, counting odd candidates and trial-dividing each.
  * Needs tail calls. */
 void test_scheme_euler_007_ten_thousand_and_first_prime() {
+    SUMMA_TEST_TODO("needs the `>=`, `>`, `*`, `=` and `modulo` builtins, then tail calls for millions of iterations");
     assert_euler_answer(EULER_PRELUDE "(define (find-prime index current-index current-prime num)"
                                       "  (cond ((>= current-index index) current-prime)"
                                       "        ((prime? num) (find-prime index (+ current-index 1) num (+ num 2)))"

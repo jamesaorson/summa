@@ -18,6 +18,7 @@
  *
  * Iterations: at most 5 per prime. Within the depth budget. */
 void test_scheme_euler_005_smallest_multiple() {
+    SUMMA_TEST_TODO("needs the `>` and `*` builtins");
     assert_euler_answer(EULER_PRELUDE "(define (highest-power p limit acc)"
                                       "  (if (> (* acc p) limit) acc (highest-power p limit (* acc p))))"
                                       "(* (highest-power 2 20 1)"

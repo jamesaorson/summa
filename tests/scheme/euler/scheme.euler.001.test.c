@@ -15,6 +15,7 @@
  * the one problem that needs no recursion at all and is blocked on builtins
  * alone. */
 void test_scheme_euler_001_multiples_of_3_and_5() {
+    SUMMA_TEST_TODO("needs the `-`, `*` and `quotient` builtins");
     assert_euler_answer(EULER_PRELUDE "(define (problem1 limit)"
                                       "  (- (+ (partial-sum limit 3) (partial-sum limit 5))"
                                       "     (partial-sum limit 15)))"
