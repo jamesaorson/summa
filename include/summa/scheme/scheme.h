@@ -390,6 +390,12 @@ SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment
                                    [[maybe_unused]] const char*                  input,
                                    [[maybe_unused]] const char**                 rest,
                                    [[maybe_unused]] SummaSchemeValue*            out) {
+    /* `token` is owned for the whole function, so nothing here returns
+     * directly -- a bare `return` leaks it. Every exit sets `err` and jumps to
+     * `cleanup`, which frees the token and returns. `err` starts out
+     * successful and is only ever assigned on failure, so a success path just
+     * fills in `*out` and jumps. */
+    SummaSchemeError    err   = summa_success();
     char                c     = '\0';
     size_t              i     = 0;
     SummaSchemeReadMode mode  = SummaSchemeReadModeInitial;
@@ -428,8 +434,8 @@ SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment
                 } else if (!iscntrl(c)) {
                     mode = SummaSchemeReadModeSymbol;
                 } else {
-                    return summa_make_error(
-                        "summa_scheme_read - SummaSchemeReadModeInitial character not yet handled");
+                    err = summa_make_error("summa_scheme_read - SummaSchemeReadModeInitial character not yet handled");
+                    goto cleanup;
                 }
             }
             }
@@ -473,7 +479,8 @@ SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment
                     mode = SummaSchemeReadModeFloating;
                     break;
                 }
-                return summa_make_error("summa_scheme_read - SummaSchemeReadModePeriod character not yet handled");
+                err = summa_make_error("summa_scheme_read - SummaSchemeReadModePeriod character not yet handled");
+                goto cleanup;
             }
             }
         } break;
@@ -486,7 +493,8 @@ SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment
                 if (isdigit(c)) {
                     break;
                 }
-                return summa_make_error("summa_scheme_read - SummaSchemeReadModeInteger character not yet handled");
+                err = summa_make_error("summa_scheme_read - SummaSchemeReadModeInteger character not yet handled");
+                goto cleanup;
             }
             }
         } break;
@@ -499,7 +507,8 @@ SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment
                 if (isdigit(c)) {
                     break;
                 }
-                return summa_make_error("summa_scheme_read - SummaSchemeReadModeFloating character not yet handled");
+                err = summa_make_error("summa_scheme_read - SummaSchemeReadModeFloating character not yet handled");
+                goto cleanup;
             }
             }
         } break;
@@ -512,10 +521,10 @@ SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment
             case '\\': {
                 /* The escape is translated, not pushed verbatim, so `\n` in
                  * the source becomes one newline byte in the string. */
-                const char*            escape_rest = nullptr;
-                const SummaSchemeError err         = summa_scheme_read_escape(input + i, &escape_rest, &c);
+                const char* escape_rest = nullptr;
+                err                     = summa_scheme_read_escape(input + i, &escape_rest, &c);
                 if (err.had) {
-                    return err;
+                    goto cleanup;
                 }
                 /* Leave `i` on the escape's last character so the loop's `++i`
                  * steps to whatever follows it. */
@@ -529,7 +538,8 @@ SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment
             }
         } break;
         default: {
-            return summa_make_error("summa_scheme_read - unhandle read mode");
+            err = summa_make_error("summa_scheme_read - unhandle read mode");
+            goto cleanup;
         }
         }
         if (c) {
@@ -538,7 +548,8 @@ SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment
     skip_string_push:
     }
     if (mode == SummaSchemeReadModeString) {
-        return summa_make_error("summa_scheme_read - string was not closed");
+        err = summa_make_error("summa_scheme_read - string was not closed");
+        goto cleanup;
     }
 token_done:
     // summa_scheme_read_handle_token_finish:
@@ -546,61 +557,65 @@ token_done:
     case SummaSchemeReadModeInteger: {
         int64_t value = atoll(token->value);
         *out          = summa_make_scheme_integer(value);
-        return summa_success();
+        goto cleanup;
     }
     case SummaSchemeReadModeFloating: {
         if (token->length == 1) {
-            return summa_make_error("summa_scheme_read - floating point number cannot be a sole decimal");
+            err = summa_make_error("summa_scheme_read - floating point number cannot be a sole decimal");
+            goto cleanup;
         }
         double value = atof(token->value);
         *out         = summa_make_scheme_floating(value);
-        return summa_success();
+        goto cleanup;
     }
     case SummaSchemeReadModeString: {
         *out = summa_make_scheme_string(token->value);
-        return summa_success();
+        goto cleanup;
     }
     case SummaSchemeReadModeSymbol: {
         if (token->value[0] == '#') { // Special object parsing
             if (token->length == 2) { // Boolean parsing
                 if (strncmp(token->value, SUMMA_SCHEME_TRUE, 2) == 0) {
                     *out = summa_make_scheme_boolean(true);
-                    return summa_success();
+                    goto cleanup;
                 } else if (strncmp(token->value, SUMMA_SCHEME_FALSE, 2) == 0) {
                     *out = summa_make_scheme_boolean(false);
-                    return summa_success();
+                    goto cleanup;
                 }
             } else if (token->value[1] == '\\') { // Character parsing
                 if (token->length == 3) {         // Normal character
                     *out = summa_make_scheme_character(token->value[2]);
-                    return summa_success();
+                    goto cleanup;
                 } else if (strcmp(token->value, "#\\space") == 0) {
                     *out = summa_make_scheme_character(' ');
-                    return summa_success();
+                    goto cleanup;
                 } else if (strcmp(token->value, "#\\newline") == 0) {
                     *out = summa_make_scheme_character('\n');
-                    return summa_success();
+                    goto cleanup;
                 } else if (strcmp(token->value, "#\\tab") == 0) {
                     *out = summa_make_scheme_character('\t');
-                    return summa_success();
+                    goto cleanup;
                 } else {
-                    return summa_make_error("summa_scheme_read - unknown character name");
+                    err = summa_make_error("summa_scheme_read - unknown character name");
+                    goto cleanup;
                 }
             } else {
-                return summa_make_error("summa_scheme_read - unknown # object");
+                err = summa_make_error("summa_scheme_read - unknown # object");
+                goto cleanup;
             }
         }
         *out = summa_make_scheme_symbol(token->value);
-        return summa_success();
+        goto cleanup;
     }
     default: {
-        return summa_make_error("summa_scheme_read - UNREACHABLE");
+        err = summa_make_error("summa_scheme_read - UNREACHABLE");
+        goto cleanup;
     }
     }
-    if (rest) {
-        *rest = input + i;
-    }
-    return summa_make_error("summa_scheme_read - NOT IMPLEMENTED");
+
+cleanup:
+    summa_string_free(token);
+    return err;
 }
 
 bool summa_scheme_truthy(const SummaSchemeValue* value) {
