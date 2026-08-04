@@ -96,23 +96,23 @@ static void assert_program_fails_with(const char* program, const char* expected_
 #pragma region literals
 
 /* A bare literal is a program: it reads, evaluates to itself, and prints. */
-void test_scheme_repl_evaluates_an_integer_literal() {
+void test_scheme_e2e_evaluates_an_integer_literal() {
     assert_program_prints("42", "42");
 }
 
-void test_scheme_repl_evaluates_a_boolean_literal() {
+void test_scheme_e2e_evaluates_a_boolean_literal() {
     assert_program_prints("#t", "#t");
     assert_program_prints("#f", "#f");
 }
 
 /* `print` is `write`, so the quotes survive the round trip. */
-void test_scheme_repl_evaluates_a_string_literal() {
+void test_scheme_e2e_evaluates_a_string_literal() {
     assert_program_prints("\"hi\"", "\"hi\"");
 }
 
 /* The escape is translated on the way in and rendered back out as the byte it
  * denotes -- the reader's work showing up at the far end of the pipeline. */
-void test_scheme_repl_evaluates_a_string_with_escapes() {
+void test_scheme_e2e_evaluates_a_string_with_escapes() {
     assert_program_prints("\"a\\tb\"", "\"a\tb\"");
 }
 
@@ -120,23 +120,23 @@ void test_scheme_repl_evaluates_a_string_with_escapes() {
 
 #pragma region arithmetic
 
-void test_scheme_repl_adds_two_numbers() {
+void test_scheme_e2e_adds_two_numbers() {
     assert_program_prints("(+ 1 2)", "3");
 }
 
-void test_scheme_repl_adds_a_variable_number_of_arguments() {
+void test_scheme_e2e_adds_a_variable_number_of_arguments() {
     assert_program_prints("(+)", "0");
     assert_program_prints("(+ 7)", "7");
     assert_program_prints("(+ 1 2 3 4)", "10");
 }
 
-void test_scheme_repl_adds_nested_results() {
+void test_scheme_e2e_adds_nested_results() {
     assert_program_prints("(+ (+ 1 2) (+ 3 4))", "10");
 }
 
 /* An integer and a floating operand give a floating result. The `%f` spelling
  * is print's convention, pinned by the print suite. */
-void test_scheme_repl_mixes_integers_and_floats() {
+void test_scheme_e2e_mixes_integers_and_floats() {
     assert_program_prints("(+ 1 2.5)", "3.500000");
 }
 
@@ -144,17 +144,17 @@ void test_scheme_repl_mixes_integers_and_floats() {
 
 #pragma region definitions
 
-void test_scheme_repl_defines_and_reads_back_a_variable() {
+void test_scheme_e2e_defines_and_reads_back_a_variable() {
     assert_program_prints("(define x 2) (+ x 40)", "42");
 }
 
 /* The point of the loop: a binding made by one expression is still there for
  * the next one. */
-void test_scheme_repl_carries_bindings_across_expressions() {
+void test_scheme_e2e_carries_bindings_across_expressions() {
     assert_program_prints("(define a 1) (define b 2) (define c 3) (+ a b c)", "6");
 }
 
-void test_scheme_repl_rebinds_with_set() {
+void test_scheme_e2e_rebinds_with_set() {
     assert_program_prints("(define x 1) (set! x 41) (+ x 1)", "42");
 }
 
@@ -162,19 +162,19 @@ void test_scheme_repl_rebinds_with_set() {
 
 #pragma region procedures
 
-void test_scheme_repl_applies_a_lambda_immediately() {
+void test_scheme_e2e_applies_a_lambda_immediately() {
     assert_program_prints("((lambda (n) (+ n 1)) 41)", "42");
 }
 
-void test_scheme_repl_defines_a_procedure_with_the_shorthand() {
+void test_scheme_e2e_defines_a_procedure_with_the_shorthand() {
     assert_program_prints("(define (inc n) (+ n 1)) (inc 41)", "42");
 }
 
-void test_scheme_repl_defines_a_procedure_as_a_lambda_binding() {
+void test_scheme_e2e_defines_a_procedure_as_a_lambda_binding() {
     assert_program_prints("(define inc (lambda (n) (+ n 1))) (inc 41)", "42");
 }
 
-void test_scheme_repl_applies_a_procedure_of_several_arguments() {
+void test_scheme_e2e_applies_a_procedure_of_several_arguments() {
     assert_program_prints("(define (add2 a b) (+ a b)) (define x 40) (add2 x 2)", "42");
 }
 
@@ -182,32 +182,32 @@ void test_scheme_repl_applies_a_procedure_of_several_arguments() {
 
 #pragma region conditionals
 
-void test_scheme_repl_takes_the_true_branch() {
+void test_scheme_e2e_takes_the_true_branch() {
     assert_program_prints("(if #t 1 2)", "1");
 }
 
-void test_scheme_repl_takes_the_false_branch() {
+void test_scheme_e2e_takes_the_false_branch() {
     assert_program_prints("(if #f 1 2)", "2");
 }
 
 /* Everything but `#f` is true, which is what makes `(if n ...)` a usable test. */
-void test_scheme_repl_treats_every_non_false_value_as_true() {
+void test_scheme_e2e_treats_every_non_false_value_as_true() {
     assert_program_prints("(if 0 1 2)", "1");
     assert_program_prints("(if \"\" 1 2)", "1");
 }
 
-void test_scheme_repl_evaluates_a_cond() {
+void test_scheme_e2e_evaluates_a_cond() {
     assert_program_prints("(cond (#f 1) (#t 2))", "2");
 }
 
-void test_scheme_repl_evaluates_when_and_unless() {
+void test_scheme_e2e_evaluates_when_and_unless() {
     assert_program_prints("(when #t 42)", "42");
     assert_program_prints("(unless #f 42)", "42");
 }
 
 /* `and` and `or` give back the operand that settled them rather than a
  * boolean, and stop as soon as it is settled. */
-void test_scheme_repl_short_circuits_and_or() {
+void test_scheme_e2e_short_circuits_and_or() {
     assert_program_prints("(and 1 2)", "2");
     assert_program_prints("(and #f 2)", "#f");
     assert_program_prints("(or #f 42)", "42");
@@ -218,22 +218,22 @@ void test_scheme_repl_short_circuits_and_or() {
 
 #pragma region binding forms
 
-void test_scheme_repl_evaluates_a_let() {
+void test_scheme_e2e_evaluates_a_let() {
     assert_program_prints("(let ((a 1) (b 2)) (+ a b))", "3");
 }
 
 /* `let*` sees the bindings to its left; plain `let` would not. */
-void test_scheme_repl_evaluates_a_let_star() {
+void test_scheme_e2e_evaluates_a_let_star() {
     assert_program_prints("(let* ((a 1) (b (+ a 1))) (+ a b))", "3");
 }
 
 /* `letrec` binds the name before the lambda is built, so the body can call
  * itself -- recursion without a top-level `define`. */
-void test_scheme_repl_evaluates_a_recursive_letrec() {
+void test_scheme_e2e_evaluates_a_recursive_letrec() {
     assert_program_prints("(letrec ((f (lambda (n) (if n (f #f) 42)))) (f #t))", "42");
 }
 
-void test_scheme_repl_sequences_with_begin() {
+void test_scheme_e2e_sequences_with_begin() {
     assert_program_prints("(begin 1 2 42)", "42");
 }
 
@@ -241,13 +241,13 @@ void test_scheme_repl_sequences_with_begin() {
 
 #pragma region quoting
 
-void test_scheme_repl_quotes_a_symbol() {
+void test_scheme_e2e_quotes_a_symbol() {
     assert_program_prints("(quote x)", "x");
     assert_program_prints("'x", "x");
 }
 
 /* Quoting is what stops `(1 2 3)` from being applied. */
-void test_scheme_repl_quotes_a_list() {
+void test_scheme_e2e_quotes_a_list() {
     assert_program_prints("'(1 2 3)", "(1 2 3)");
     assert_program_prints("'(a (b c))", "(a (b c))");
 }
@@ -258,7 +258,7 @@ void test_scheme_repl_quotes_a_list() {
 
 /* Atmosphere between and around expressions is the reader's problem, but a
  * program written the way a person writes one is what proves it. */
-void test_scheme_repl_runs_a_program_spanning_lines_and_comments() {
+void test_scheme_e2e_runs_a_program_spanning_lines_and_comments() {
     assert_program_prints("; double it\n"
                           "(define (double n) (+ n n))\n"
                           "\n"
@@ -268,7 +268,7 @@ void test_scheme_repl_runs_a_program_spanning_lines_and_comments() {
 }
 
 /* Several expressions, each building on the last. */
-void test_scheme_repl_runs_a_multi_step_program() {
+void test_scheme_e2e_runs_a_multi_step_program() {
     assert_program_prints("(define x 0)"
                           "(define (bump n) (+ n 1))"
                           "(set! x (bump x))"
@@ -279,7 +279,7 @@ void test_scheme_repl_runs_a_multi_step_program() {
 
 /* The value of a program is the value of its last expression, whatever the
  * ones before it did. */
-void test_scheme_repl_yields_the_last_expression() {
+void test_scheme_e2e_yields_the_last_expression() {
     assert_program_prints("1 2 3", "3");
     assert_program_prints("(define x 1) 99", "99");
 }
@@ -288,29 +288,29 @@ void test_scheme_repl_yields_the_last_expression() {
 
 #pragma region errors
 
-void test_scheme_repl_rejects_an_unbound_variable() {
+void test_scheme_e2e_rejects_an_unbound_variable() {
     assert_program_fails_with("nope", "Unbound variable: nope");
 }
 
 /* Reading and evaluating fail independently: `(1 2 3)` is a fine datum and a
  * bad expression. */
-void test_scheme_repl_rejects_applying_a_non_procedure() {
+void test_scheme_e2e_rejects_applying_a_non_procedure() {
     assert_program_fails_with("(1 2 3)", "Wrong type to apply: 1");
 }
 
-void test_scheme_repl_rejects_bad_arguments() {
+void test_scheme_e2e_rejects_bad_arguments() {
     assert_program_fails("(+ 1 \"x\")");
 }
 
 /* A read error stops the program where an evaluate error would. */
-void test_scheme_repl_stops_on_a_read_error() {
+void test_scheme_e2e_stops_on_a_read_error() {
     assert_program_fails("(define x 1) (+ x");
     assert_program_fails("(define x 1) \"unterminated");
 }
 
 /* The failure has to come from the expression that is wrong, not from the ones
  * before it -- so the earlier ones must have run cleanly. */
-void test_scheme_repl_runs_up_to_the_failing_expression() {
+void test_scheme_e2e_runs_up_to_the_failing_expression() {
     SCOPED_GLOBAL_ENV(env) {
         SummaSchemeValue       result = {};
         const SummaSchemeError err    = run_program(env, "(define x 40) (+ x nope)", &result);
@@ -336,51 +336,51 @@ void test_scheme_repl_runs_up_to_the_failing_expression() {
 #pragma endregion errors
 
 int main(int argc, char** argv) {
-    summa_test_begin("scheme.repl", argc, argv);
+    summa_test_begin("scheme.e2e", argc, argv);
 
-    SUMMA_TEST_RUN(test_scheme_repl_evaluates_an_integer_literal);
-    SUMMA_TEST_RUN(test_scheme_repl_evaluates_a_boolean_literal);
-    SUMMA_TEST_RUN(test_scheme_repl_evaluates_a_string_literal);
-    SUMMA_TEST_RUN(test_scheme_repl_evaluates_a_string_with_escapes);
+    SUMMA_TEST_RUN(test_scheme_e2e_evaluates_an_integer_literal);
+    SUMMA_TEST_RUN(test_scheme_e2e_evaluates_a_boolean_literal);
+    SUMMA_TEST_RUN(test_scheme_e2e_evaluates_a_string_literal);
+    SUMMA_TEST_RUN(test_scheme_e2e_evaluates_a_string_with_escapes);
 
-    SUMMA_TEST_RUN(test_scheme_repl_adds_two_numbers);
-    SUMMA_TEST_RUN(test_scheme_repl_adds_a_variable_number_of_arguments);
-    SUMMA_TEST_RUN(test_scheme_repl_adds_nested_results);
-    SUMMA_TEST_RUN(test_scheme_repl_mixes_integers_and_floats);
+    SUMMA_TEST_RUN(test_scheme_e2e_adds_two_numbers);
+    SUMMA_TEST_RUN(test_scheme_e2e_adds_a_variable_number_of_arguments);
+    SUMMA_TEST_RUN(test_scheme_e2e_adds_nested_results);
+    SUMMA_TEST_RUN(test_scheme_e2e_mixes_integers_and_floats);
 
-    SUMMA_TEST_RUN(test_scheme_repl_defines_and_reads_back_a_variable);
-    SUMMA_TEST_RUN(test_scheme_repl_carries_bindings_across_expressions);
-    SUMMA_TEST_RUN(test_scheme_repl_rebinds_with_set);
+    SUMMA_TEST_RUN(test_scheme_e2e_defines_and_reads_back_a_variable);
+    SUMMA_TEST_RUN(test_scheme_e2e_carries_bindings_across_expressions);
+    SUMMA_TEST_RUN(test_scheme_e2e_rebinds_with_set);
 
-    SUMMA_TEST_RUN(test_scheme_repl_applies_a_lambda_immediately);
-    SUMMA_TEST_RUN(test_scheme_repl_defines_a_procedure_with_the_shorthand);
-    SUMMA_TEST_RUN(test_scheme_repl_defines_a_procedure_as_a_lambda_binding);
-    SUMMA_TEST_RUN(test_scheme_repl_applies_a_procedure_of_several_arguments);
+    SUMMA_TEST_RUN(test_scheme_e2e_applies_a_lambda_immediately);
+    SUMMA_TEST_RUN(test_scheme_e2e_defines_a_procedure_with_the_shorthand);
+    SUMMA_TEST_RUN(test_scheme_e2e_defines_a_procedure_as_a_lambda_binding);
+    SUMMA_TEST_RUN(test_scheme_e2e_applies_a_procedure_of_several_arguments);
 
-    SUMMA_TEST_RUN(test_scheme_repl_takes_the_true_branch);
-    SUMMA_TEST_RUN(test_scheme_repl_takes_the_false_branch);
-    SUMMA_TEST_RUN(test_scheme_repl_treats_every_non_false_value_as_true);
-    SUMMA_TEST_RUN(test_scheme_repl_evaluates_a_cond);
-    SUMMA_TEST_RUN(test_scheme_repl_evaluates_when_and_unless);
-    SUMMA_TEST_RUN(test_scheme_repl_short_circuits_and_or);
+    SUMMA_TEST_RUN(test_scheme_e2e_takes_the_true_branch);
+    SUMMA_TEST_RUN(test_scheme_e2e_takes_the_false_branch);
+    SUMMA_TEST_RUN(test_scheme_e2e_treats_every_non_false_value_as_true);
+    SUMMA_TEST_RUN(test_scheme_e2e_evaluates_a_cond);
+    SUMMA_TEST_RUN(test_scheme_e2e_evaluates_when_and_unless);
+    SUMMA_TEST_RUN(test_scheme_e2e_short_circuits_and_or);
 
-    SUMMA_TEST_RUN(test_scheme_repl_evaluates_a_let);
-    SUMMA_TEST_RUN(test_scheme_repl_evaluates_a_let_star);
-    SUMMA_TEST_RUN(test_scheme_repl_evaluates_a_recursive_letrec);
-    SUMMA_TEST_RUN(test_scheme_repl_sequences_with_begin);
+    SUMMA_TEST_RUN(test_scheme_e2e_evaluates_a_let);
+    SUMMA_TEST_RUN(test_scheme_e2e_evaluates_a_let_star);
+    SUMMA_TEST_RUN(test_scheme_e2e_evaluates_a_recursive_letrec);
+    SUMMA_TEST_RUN(test_scheme_e2e_sequences_with_begin);
 
-    SUMMA_TEST_RUN(test_scheme_repl_quotes_a_symbol);
-    SUMMA_TEST_RUN(test_scheme_repl_quotes_a_list);
+    SUMMA_TEST_RUN(test_scheme_e2e_quotes_a_symbol);
+    SUMMA_TEST_RUN(test_scheme_e2e_quotes_a_list);
 
-    SUMMA_TEST_RUN(test_scheme_repl_runs_a_program_spanning_lines_and_comments);
-    SUMMA_TEST_RUN(test_scheme_repl_runs_a_multi_step_program);
-    SUMMA_TEST_RUN(test_scheme_repl_yields_the_last_expression);
+    SUMMA_TEST_RUN(test_scheme_e2e_runs_a_program_spanning_lines_and_comments);
+    SUMMA_TEST_RUN(test_scheme_e2e_runs_a_multi_step_program);
+    SUMMA_TEST_RUN(test_scheme_e2e_yields_the_last_expression);
 
-    SUMMA_TEST_RUN(test_scheme_repl_rejects_an_unbound_variable);
-    SUMMA_TEST_RUN(test_scheme_repl_rejects_applying_a_non_procedure);
-    SUMMA_TEST_RUN(test_scheme_repl_rejects_bad_arguments);
-    SUMMA_TEST_RUN(test_scheme_repl_stops_on_a_read_error);
-    SUMMA_TEST_RUN(test_scheme_repl_runs_up_to_the_failing_expression);
+    SUMMA_TEST_RUN(test_scheme_e2e_rejects_an_unbound_variable);
+    SUMMA_TEST_RUN(test_scheme_e2e_rejects_applying_a_non_procedure);
+    SUMMA_TEST_RUN(test_scheme_e2e_rejects_bad_arguments);
+    SUMMA_TEST_RUN(test_scheme_e2e_stops_on_a_read_error);
+    SUMMA_TEST_RUN(test_scheme_e2e_runs_up_to_the_failing_expression);
 
     return summa_test_end();
 }
