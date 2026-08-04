@@ -269,6 +269,11 @@ SummaSchemeError summa_scheme_display(const SummaSchemeValue value, FILE* out);
  * the C stack. Counted in evaluate frames, several per Scheme-level call. */
 #define SUMMA_SCHEME_MAX_DEPTH 2000
 
+/* The same guard for reading, which recurses once per level of nesting. Far
+ * lower than the evaluate limit because source that nests this deep is a
+ * runaway `(((((...`, not a program someone wrote. */
+#define SUMMA_SCHEME_READ_MAX_DEPTH 200
+
 #pragma endregion REPL
 
 #endif
@@ -285,6 +290,10 @@ SummaSchemeError summa_scheme_procedure_dispatch(SummaSchemeEnvironment env,
 SummaSchemeError
 summa_scheme_evaluate_arguments(const SummaSchemeEnvironment env, const SummaList form, SummaList* out);
 void summa_scheme_argument_list_free(SummaList args);
+
+/* Frees a list and every value in it. Defined further down, but the reader
+ * needs it to unwind a half-built list when a datum inside it fails. */
+static void summa_scheme_list_free_deep(SummaList list);
 
 /* Evaluates form[1..], dispatches, releases them. Every call goes through here. */
 static SummaSchemeError summa_scheme_apply(const SummaSchemeEnvironment env,
@@ -318,7 +327,44 @@ typedef enum {
     SummaSchemeReadModeString,
 } SummaSchemeReadMode;
 
+/* What a single read turned up. A close paren and an exhausted input are both
+ * ordinary outcomes inside a list -- one ends it, the other means it was never
+ * closed -- and both are errors when the top-level read is what met them, so
+ * the decision belongs to the caller rather than to the frame that saw them. */
+typedef enum {
+    SummaSchemeReadDatumValue, /* `*out` holds the datum. */
+    SummaSchemeReadDatumClose, /* A `)`, already consumed. */
+    SummaSchemeReadDatumEnd,   /* Input held nothing but atmosphere. */
+} SummaSchemeReadDatumKind;
+
 #include <ctype.h>
+
+/* A datum's text ends wherever the next one could begin, so these characters
+ * terminate an atom without being part of it. */
+static bool summa_scheme_read_is_delimiter(char c) {
+    return c == '\0' || isspace(c) || c == '(' || c == ')' || c == '"' || c == ';' || c == '\'';
+}
+
+/* Whitespace and `;` line comments carry no datum. Every read skips them
+ * first and consumes them afterwards, which is what makes `rest` land on the
+ * next datum rather than in the gap before it. Returns the offset of the first
+ * character that could start one. */
+static size_t summa_scheme_read_skip_atmosphere(const char* input) {
+    size_t i = 0;
+    for (;;) {
+        while (isspace(input[i])) {
+            i++;
+        }
+        if (input[i] != ';') {
+            return i;
+        }
+        /* A line comment runs to the newline, or to the end of input if the
+         * last line has none. */
+        while (input[i] && input[i] != '\n') {
+            i++;
+        }
+    }
+}
 
 SummaSchemeError summa_scheme_read_escape(const char* input, const char** rest, char* out) {
     if (input[0] != '\\') {
@@ -386,10 +432,11 @@ SummaSchemeError summa_scheme_read_escape(const char* input, const char** rest, 
     return summa_success();
 }
 
-SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment env,
-                                   [[maybe_unused]] const char*                  input,
-                                   [[maybe_unused]] const char**                 rest,
-                                   [[maybe_unused]] SummaSchemeValue*            out) {
+/* Reads one atom -- a number, symbol, boolean, character or string. `input`
+ * must start on the atom's first character, since skipping atmosphere is the
+ * caller's job, and `*rest` is left on the first character the atom did not
+ * consume. `*rest` is untouched on error. */
+static SummaSchemeError summa_scheme_read_atom(const char* input, const char** rest, SummaSchemeValue* out) {
     /* `token` is owned for the whole function, so nothing here returns
      * directly -- a bare `return` leaks it. Every exit sets `err` and jumps to
      * `cleanup`, which frees the token and returns. `err` starts out
@@ -401,14 +448,13 @@ SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment
     SummaSchemeReadMode mode  = SummaSchemeReadModeInitial;
     SummaString         token = summa_string_make_empty();
     for (c = input[0]; c; c = input[++i]) {
-        if (rest) {
-            *rest = input + i;
-        }
-
-        if (mode != SummaSchemeReadModeString && isblank(c)) {
-            if (token->length == 0) {
-                continue;
-            }
+        /* Whatever follows `#\` is data, however much it looks like
+         * punctuation: `#\(` and `#\;` are characters. */
+        const bool after_character_prefix = token->length == 2 && token->value[0] == '#' && token->value[1] == '\\';
+        /* Nothing delimits an atom at its first character -- a leading `"`
+         * opens a string rather than ending an empty token. */
+        if (mode != SummaSchemeReadModeInitial && mode != SummaSchemeReadModeString && !after_character_prefix &&
+            summa_scheme_read_is_delimiter(c)) {
             break;
         }
 
@@ -531,6 +577,9 @@ SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment
                 i = (size_t)(escape_rest - input) - 1;
             } break;
             case '"': {
+                /* Step past the closing quote so `rest` resumes after it
+                 * rather than on it. */
+                i++;
                 goto token_done;
             } break;
             default:
@@ -622,8 +671,161 @@ token_done:
     }
 
 cleanup:
+    if (!err.had && rest) {
+        *rest = input + i;
+    }
     summa_string_free(token);
     return err;
+}
+
+/* Reads datums up to the closing paren, which is the shared body of a list and
+ * a vector. `input` starts just past the opening bracket. */
+static SummaSchemeError summa_scheme_read_sequence(const char* input, const char** rest, SummaList* out, size_t depth);
+
+/* Reads one datum. `kind` reports what was found, since a `)` and an exhausted
+ * input are both ordinary outcomes one frame down and errors at the top. */
+static SummaSchemeError summa_scheme_read_datum(
+    const char* input, const char** rest, SummaSchemeValue* out, SummaSchemeReadDatumKind* kind, size_t depth) {
+    if (depth > SUMMA_SCHEME_READ_MAX_DEPTH) {
+        return summa_make_error("summa_scheme_read - nesting is too deep");
+    }
+
+    const char* cursor = input + summa_scheme_read_skip_atmosphere(input);
+
+    if (!*cursor) {
+        *kind = SummaSchemeReadDatumEnd;
+        if (rest) {
+            *rest = cursor;
+        }
+        return summa_success();
+    }
+    if (*cursor == ')') {
+        *kind = SummaSchemeReadDatumClose;
+        if (rest) {
+            *rest = cursor + 1;
+        }
+        return summa_success();
+    }
+
+    *kind = SummaSchemeReadDatumValue;
+    switch (*cursor) {
+    case '(': {
+        SummaList        items = nullptr;
+        SummaSchemeError err   = summa_scheme_read_sequence(cursor + 1, &cursor, &items, depth + 1);
+        if (err.had) {
+            return err;
+        }
+        *out = summa_make_scheme_list(items);
+    } break;
+    case '\'': {
+        /* `'x` expands to `(quote x)` here, so the shorthand never reaches the
+         * evaluator as a form of its own. */
+        SummaSchemeValue         quoted      = {};
+        SummaSchemeReadDatumKind quoted_kind = SummaSchemeReadDatumValue;
+        SummaSchemeError         err = summa_scheme_read_datum(cursor + 1, &cursor, &quoted, &quoted_kind, depth + 1);
+        if (err.had) {
+            return err;
+        }
+        if (quoted_kind != SummaSchemeReadDatumValue) {
+            return summa_make_error("summa_scheme_read - quote has nothing to quote");
+        }
+        SummaList form = summa_list_make_empty();
+        summa_list_push(form, &summa_make_scheme_symbol("quote"));
+        summa_list_push(form, &quoted);
+        *out = summa_make_scheme_list(form);
+    } break;
+    default: {
+        /* `#` starts a vector only when a bracket follows; otherwise it is the
+         * first character of `#t`, `#f` or `#\c`. */
+        if (cursor[0] == '#' && cursor[1] == '(') {
+            SummaList        items = nullptr;
+            SummaSchemeError err   = summa_scheme_read_sequence(cursor + 2, &cursor, &items, depth + 1);
+            if (err.had) {
+                return err;
+            }
+            *out = summa_make_scheme_vector(items);
+            break;
+        }
+        SummaSchemeError err = summa_scheme_read_atom(cursor, &cursor, out);
+        if (err.had) {
+            return err;
+        }
+    } break;
+    }
+
+    if (rest) {
+        *rest = cursor + summa_scheme_read_skip_atmosphere(cursor);
+    }
+    return summa_success();
+}
+
+static SummaSchemeError
+summa_scheme_read_sequence(const char* input, const char** rest, SummaList* out, size_t depth) {
+    /* `items` is owned until it is handed over, so the error paths unwind it
+     * along with every datum already pushed into it. */
+    SummaSchemeError err    = summa_success();
+    SummaList        items  = summa_list_make_empty();
+    const char*      cursor = input;
+    for (;;) {
+        SummaSchemeValue         item = {};
+        SummaSchemeReadDatumKind kind = SummaSchemeReadDatumValue;
+
+        err = summa_scheme_read_datum(cursor, &cursor, &item, &kind, depth);
+        if (err.had) {
+            goto cleanup;
+        }
+        if (kind == SummaSchemeReadDatumClose) {
+            break;
+        }
+        if (kind == SummaSchemeReadDatumEnd) {
+            err = summa_make_error("summa_scheme_read - input ended inside a list");
+            goto cleanup;
+        }
+        summa_list_push(items, &item);
+    }
+
+    *out  = items;
+    items = nullptr; /* Handed to the caller; no longer ours to free. */
+    if (rest) {
+        *rest = cursor;
+    }
+cleanup:
+    summa_scheme_list_free_deep(items);
+    return err;
+}
+
+SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment env,
+                                   const char*                                   input,
+                                   const char**                                  rest,
+                                   SummaSchemeValue*                             out) {
+    const char*              cursor = nullptr;
+    SummaSchemeValue         value  = {};
+    SummaSchemeReadDatumKind kind   = SummaSchemeReadDatumValue;
+
+    const SummaSchemeError err = summa_scheme_read_datum(input, &cursor, &value, &kind, 0);
+    if (err.had) {
+        return err;
+    }
+    if (kind == SummaSchemeReadDatumEnd) {
+        return summa_make_error("summa_scheme_read - input held no datum");
+    }
+    if (kind == SummaSchemeReadDatumClose) {
+        return summa_make_error("summa_scheme_read - unbalanced close paren");
+    }
+
+    /* Nothing else in the grammar can start with `)`, so one sitting where the
+     * next datum would go is unbalanced no matter what preceded it. Caught
+     * here rather than left for the next call, so `(1))` fails as a whole. */
+    if (*cursor == ')') {
+        summa_scheme_value_free(&value);
+        return summa_make_error("summa_scheme_read - unbalanced close paren");
+    }
+
+    *out = value;
+    if (rest) {
+        *rest = cursor;
+    }
+    return summa_success();
 }
 
 bool summa_scheme_truthy(const SummaSchemeValue* value) {
