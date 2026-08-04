@@ -90,6 +90,39 @@ void test_ref_count_concurrent_final_release_frees_exactly_once() {
     SUMMA_TEST_ASSERT_EQ(1u, freed_count);
 }
 
+/* The destructor's exactly-once guarantee is the free's, since it runs on the
+ * same branch. Counted atomically because -- unlike the per-thread `freed`
+ * slots above -- every thread would be writing the same object if the guarantee
+ * did not hold, which is the very thing under test. */
+static atomic_size_t concurrent_destructor_calls;
+
+static void tally_destructor([[maybe_unused]] void* payload) {
+    atomic_fetch_add(&concurrent_destructor_calls, 1);
+}
+
+void test_ref_count_concurrent_final_release_destroys_exactly_once() {
+    atomic_store(&concurrent_destructor_calls, 0);
+    RefCount            rc = ref_count_make_with_destructor(int, tally_destructor);
+    summa_test_thread_t threads[THREAD_COUNT];
+    ReleaseArgs         args[THREAD_COUNT] = {};
+
+    for (size_t i = 1; i < THREAD_COUNT; i++) {
+        ref_count_acquire(rc);
+    }
+
+    for (size_t i = 0; i < THREAD_COUNT; i++) {
+        args[i].rc = rc;
+        summa_test_thread_start(&threads[i], release_thread, &args[i]);
+    }
+    for (size_t i = 0; i < THREAD_COUNT; i++) {
+        summa_test_thread_join(&threads[i]);
+    }
+
+    /* Two would be a double teardown of whatever the payload owned; none would
+     * be the leak the destructor exists to prevent. */
+    SUMMA_TEST_ASSERT_EQ(1u, atomic_load(&concurrent_destructor_calls));
+}
+
 typedef struct {
     RefCount rc;
     bool     payload_changed;
@@ -134,6 +167,7 @@ int main(int argc, char** argv) {
     summa_test_begin("ref_count.threaded", argc, argv);
     SUMMA_TEST_RUN(test_ref_count_concurrent_churn_balances);
     SUMMA_TEST_RUN(test_ref_count_concurrent_final_release_frees_exactly_once);
+    SUMMA_TEST_RUN(test_ref_count_concurrent_final_release_destroys_exactly_once);
     SUMMA_TEST_RUN(test_ref_count_payload_survives_concurrent_ownership);
     return summa_test_end();
 }
