@@ -45,27 +45,49 @@ stop evaluating once the answer is known — which is why neither is a builtin.
 
 ## Procedures
 
-Arithmetic, comparison and the string accessors exist; the list, equality and
-predicate families do not. Adding one is a function of type
+Arithmetic, comparison, the string accessors and the list procedures exist; the
+equality and predicate families do not. Adding one is a function of type
 `SummaSchemeBuiltinFn` plus a row in `SUMMA_SCHEME_BUILTINS`; the global
 environment binds a procedure per row at startup and dispatch finds it by the
 same name, so there is nothing else to register. `summa_scheme_require_arity`,
 `summa_scheme_require_min_arity`, `summa_scheme_require_type`,
-`summa_scheme_require_arity_of_type`, `summa_scheme_require_numbers`,
-`summa_scheme_has_floating` and `summa_scheme_number_to_double` are already
-there as the shared argument checking.
+`summa_scheme_require_arity_of_type`, `summa_scheme_require_nonempty_list`,
+`summa_scheme_require_numbers`, `summa_scheme_has_floating` and
+`summa_scheme_number_to_double` are already there as the shared argument
+checking.
 
-### Pairs and lists — still to write
+### Pairs and lists — implemented
 
 Unbounded data structure — what makes the language usable rather than merely
 complete.
 
 `cons` · `car` · `cdr` · `list` · `null?` · `pair?`
 
-All four constructors must copy: `summa_scheme_apply` releases the argument list
-the instant dispatch returns, so anything handed back still pointing into it is
+All four constructors copy: `summa_scheme_apply` releases the argument list the
+instant dispatch returns, so anything handed back still pointing into it is
 freed memory. `summa_scheme_value_copy` is deep, which is what makes that
 correct.
+
+`cons` takes a list as its second argument or errors, and the message names why:
+`(cons 1 2)` is an improper pair, which a dynamic array has no way to be.
+Answering `(1 2)` instead would be a different value wearing the same name.
+Prepending therefore builds a list of length n+1 rather than a cell pointing at
+the old one, so a list head nests — `(cons '(1) '(2))` is `((1) 2)`, not
+`(1 2)`.
+
+`car` and `cdr` share one checker: one operand, a list, and not the empty one.
+`(car '())` is an error, but `(cdr '(1))` is `()` — an exhausted tail is the
+value a recursion stops on, not a mistake. `cdr` copies, so no two values ever
+observe the same tail.
+
+`(list)` is `()`. `null?` is true for the empty list alone — `#()` is an empty
+*vector*, a distinct type, and is not null — and `pair?` is its complement over
+lists: true from one element up, false for `()` and for every other type.
+Neither is an error on a non-list.
+
+A list value can carry a null `SummaList` handle as readily as a zero-length
+one, so `summa_scheme_list_length` reads both as empty rather than one of them
+as a segfault.
 
 `set-car!` and `set-cdr!` are **not** on this list. See the gotcha below.
 
@@ -227,19 +249,19 @@ name (`(f 1)`) or an expression (`((lambda (x) x) 1)`), both routed through
 frame that produced them. `summa_scheme_read`, so a program can be written as
 source rather than built as values.
 
-Sixteen builtins: the arithmetic, comparison, boolean and string sets above.
-Recursion has a numeric base case now, which is what the euler suites were
-waiting on — problems 1, 2, 5, 6 and 9 pass.
+Twenty-two builtins: the arithmetic, comparison, boolean, string and list sets
+above. Recursion has a numeric base case now, which is what the euler suites
+were waiting on — problems 1, 2, 5, 6 and 9 pass.
 
 Covered by `tests/scheme/scheme.special_forms.test.c` and
 `tests/scheme/scheme.builtins.test.c`.
 
-**Not done.** `/`, the pair and list procedures, the equality procedures, the
-type predicates, `display` and `newline`. Tail calls, which is what the five
-remaining euler problems are blocked on — each of them iterates past
-`SUMMA_SCHEME_MAX_DEPTH`.
+**Not done.** `/`, the equality procedures, the type predicates, `display` and
+`newline`. Tail calls, which is what the five remaining euler problems are
+blocked on — each of them iterates past `SUMMA_SCHEME_MAX_DEPTH`.
 
-The list builtins are the larger of the two gaps: without them there is no
-unbounded data structure, so every program here threads its state through
-accumulator arguments. That is the shape of the gap, not a limit on the
-evaluator.
+Tail calls are now the only structural gap. The list procedures gave the
+language its unbounded data structure, but walking one still costs a C frame per
+element, so how long a list a program can traverse is bounded by
+`SUMMA_SCHEME_MAX_DEPTH` rather than by memory. That is the shape of the gap,
+not a limit on the evaluator.

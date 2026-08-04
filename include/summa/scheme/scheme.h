@@ -260,8 +260,10 @@ SummaSchemeError summa_scheme_read_escape(const char* input, const char** rest, 
 SummaSchemeError
 summa_scheme_evaluate(const SummaSchemeEnvironment env, const SummaSchemeValue in, SummaSchemeValue* out);
 
-/* `print` is R7RS `write` -- strings quoted, so output reads back as source.
- * `display` is the same traversal with strings raw, nested ones included. */
+/* `print` is R7RS `write`: output reads back as source, so strings are quoted
+ * and characters carry their `#\` prefix. `display` is the same traversal
+ * rendered for a human -- strings raw and characters as themselves, nested ones
+ * included. */
 SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out);
 SummaSchemeError summa_scheme_display(const SummaSchemeValue value, FILE* out);
 
@@ -993,7 +995,7 @@ static SummaSchemeError summa_scheme_evaluate_inner([[maybe_unused]] const Summa
     return summa_success();
 }
 
-static SummaSchemeError summa_scheme_print_styled(const SummaSchemeValue value, FILE* out, bool quote_strings);
+static SummaSchemeError summa_scheme_print_styled(const SummaSchemeValue value, FILE* out, bool readable);
 
 SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out) {
     return summa_scheme_print_styled(value, out, true);
@@ -1003,7 +1005,7 @@ SummaSchemeError summa_scheme_display(const SummaSchemeValue value, FILE* out) {
     return summa_scheme_print_styled(value, out, false);
 }
 
-static SummaSchemeError summa_scheme_print_styled(const SummaSchemeValue value, FILE* out, bool quote_strings) {
+static SummaSchemeError summa_scheme_print_styled(const SummaSchemeValue value, FILE* out, bool readable) {
     if (!out) {
         return summa_make_error("summa_scheme_print - Out file was null");
     }
@@ -1018,8 +1020,37 @@ static SummaSchemeError summa_scheme_print_styled(const SummaSchemeValue value, 
         }
     } break;
     case SummaSchemeCharacterType: {
-        SummaSchemeCharacter val = value.value.character;
-        fprintf(out, "%c", val.value);
+        const SummaSchemeCharacter val = value.value.character;
+        if (!readable) {
+            /* `display` puts the character itself in the stream -- writing a
+             * newline means a line break, not the six letters of its name. */
+            fprintf(out, "%c", val.value);
+            break;
+        }
+        /* `write` has to read back, and the three the reader spells by name
+         * are exactly the three whose glyph would not survive the round trip.
+         * R7RS names more of them -- `#\null`, `#\return`, `#\alarm`,
+         * `#\delete` -- but summa_scheme_read_atom accepts only these, so
+         * emitting the others would produce source it could not read. */
+        const char* name = nullptr;
+        switch (val.value) {
+        case ' ': {
+            name = "space";
+        } break;
+        case '\n': {
+            name = "newline";
+        } break;
+        case '\t': {
+            name = "tab";
+        } break;
+        default:
+            break;
+        }
+        if (name) {
+            fprintf(out, "#\\%s", name);
+        } else {
+            fprintf(out, "#\\%c", val.value);
+        }
     } break;
     case SummaSchemeFloatingType: {
         SummaSchemeFloating val = value.value.floating;
@@ -1037,7 +1068,7 @@ static SummaSchemeError summa_scheme_print_styled(const SummaSchemeValue value, 
                 fprintf(out, " ");
             }
             SummaSchemeValue next_value = val.value->value[i];
-            summa_scheme_print_styled(next_value, out, quote_strings);
+            summa_scheme_print_styled(next_value, out, readable);
         }
         fprintf(out, ")");
     } break;
@@ -1057,7 +1088,7 @@ static SummaSchemeError summa_scheme_print_styled(const SummaSchemeValue value, 
     case SummaSchemeStringType: {
         SummaSchemeString val = value.value.string;
         SummaString       str = val.value;
-        fprintf(out, quote_strings ? "\"%s\"" : "%s", str->value);
+        fprintf(out, readable ? "\"%s\"" : "%s", str->value);
     } break;
     case SummaSchemeSymbolType: {
         SummaSchemeSymbol val = value.value.symbol;
@@ -1072,7 +1103,7 @@ static SummaSchemeError summa_scheme_print_styled(const SummaSchemeValue value, 
                 fprintf(out, " ");
             }
             SummaSchemeValue next_value = val.value->value[i];
-            summa_scheme_print_styled(next_value, out, quote_strings);
+            summa_scheme_print_styled(next_value, out, readable);
         }
         fprintf(out, ")");
     } break;
@@ -1900,6 +1931,123 @@ static SummaSchemeError summa_scheme_builtin_char_to_integer(const SummaList arg
     return summa_success();
 }
 
+/* A list value carries a null handle as readily as a zero-length one -- the
+ * reader only ever builds the second, but a value assembled in C can hold the
+ * first -- so both are the empty list here rather than one of them a segfault. */
+static size_t summa_scheme_list_length(const SummaSchemeValue* value) {
+    return value->value.list.value ? value->value.list.value->length : 0;
+}
+
+/* What `car` and `cdr` both want: one operand, a list, and not the empty one.
+ * `(car '())` has no element to hand back, so it is an error rather than a
+ * value -- unlike `(cdr '(1))`, whose tail is legitimately `()`. */
+static SummaSchemeError summa_scheme_require_nonempty_list(const char* name, const SummaList args) {
+    const SummaSchemeError err = summa_scheme_require_arity_of_type(name, args, 1, SummaSchemeListType);
+    if (err.had) {
+        return err;
+    }
+    if (summa_scheme_list_length(&args->value[0]) == 0) {
+        snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - expects a non-empty list", name);
+        return summa_make_error(ERROR_MESSAGE);
+    }
+    return summa_success();
+}
+
+/* Lists are dynamic arrays rather than cons cells, so the tail has to be a
+ * list: `(cons 1 2)` is an improper pair and has no representation here.
+ * Coercing it to `(1 2)` would be a different answer wearing the same name.
+ *
+ * Prepending is therefore a new list of length n+1, not a cell pointing at the
+ * old one -- which is also what makes the result outlive the arguments. */
+static SummaSchemeError summa_scheme_builtin_cons(const SummaList args, SummaSchemeValue* out) {
+    const SummaSchemeError err = summa_scheme_require_arity("cons", args, 2);
+    if (err.had) {
+        return err;
+    }
+    if (args->value[1].type != SummaSchemeListType) {
+        snprintf(ERROR_MESSAGE,
+                 ERROR_MESSAGE_LENGTH,
+                 "cons - argument 2 must be list, got %s (there are no improper pairs)",
+                 summa_scheme_type_name(args->value[1].type));
+        return summa_make_error(ERROR_MESSAGE);
+    }
+
+    const SummaList  tail  = args->value[1].value.list.value;
+    const SummaList  items = summa_list_make_empty();
+    SummaSchemeValue head;
+    summa_scheme_value_copy(&head, &args->value[0]);
+    summa_list_push(items, &head);
+    for (size_t i = 0; tail && i < tail->length; i++) {
+        SummaSchemeValue element;
+        summa_scheme_value_copy(&element, &tail->value[i]);
+        summa_list_push(items, &element);
+    }
+    *out = summa_make_scheme_list(items);
+    return summa_success();
+}
+
+static SummaSchemeError summa_scheme_builtin_car(const SummaList args, SummaSchemeValue* out) {
+    const SummaSchemeError err = summa_scheme_require_nonempty_list("car", args);
+    if (err.had) {
+        return err;
+    }
+    /* A copy, never a pointer into the argument: `summa_scheme_apply` releases
+     * the argument list the instant dispatch returns. */
+    return summa_scheme_value_copy(out, &args->value[0].value.list.value->value[0]);
+}
+
+/* The tail copied element by element, so no two values ever observe the same
+ * one. `(cdr '(1))` is `()` -- a list with nothing left in it, which is a
+ * value, not the error `(car '())` is. */
+static SummaSchemeError summa_scheme_builtin_cdr(const SummaList args, SummaSchemeValue* out) {
+    const SummaSchemeError err = summa_scheme_require_nonempty_list("cdr", args);
+    if (err.had) {
+        return err;
+    }
+
+    const SummaList source = args->value[0].value.list.value;
+    const SummaList items  = summa_list_make_empty();
+    for (size_t i = 1; i < source->length; i++) {
+        SummaSchemeValue element;
+        summa_scheme_value_copy(&element, &source->value[i]);
+        summa_list_push(items, &element);
+    }
+    *out = summa_make_scheme_list(items);
+    return summa_success();
+}
+
+/* Variadic all the way down: `(list)` is `()`. Every operand is deep-copied,
+ * so a list built out of other lists owns its elements outright. */
+static SummaSchemeError summa_scheme_builtin_list(const SummaList args, SummaSchemeValue* out) {
+    *out = summa_make_scheme_list(summa_scheme_list_copy_deep(args));
+    return summa_success();
+}
+
+/* The empty list alone. `#()` is an empty *vector* -- a distinct type, and not
+ * null, which is the distinction a length check on its own would lose. */
+static SummaSchemeError summa_scheme_builtin_is_null(const SummaList args, SummaSchemeValue* out) {
+    const SummaSchemeError err = summa_scheme_require_arity("null?", args, 1);
+    if (err.had) {
+        return err;
+    }
+    const SummaSchemeValue* value = &args->value[0];
+    *out = summa_make_scheme_boolean(value->type == SummaSchemeListType && summa_scheme_list_length(value) == 0);
+    return summa_success();
+}
+
+/* Anything with a car, which without cons cells means a list of at least one
+ * element. The exact complement of `null?` over lists, and #f for every other
+ * type -- neither predicate is an error on one. */
+static SummaSchemeError summa_scheme_builtin_is_pair(const SummaList args, SummaSchemeValue* out) {
+    const SummaSchemeError err = summa_scheme_require_arity("pair?", args, 1);
+    if (err.had) {
+        return err;
+    }
+    const SummaSchemeValue* value = &args->value[0];
+    *out = summa_make_scheme_boolean(value->type == SummaSchemeListType && summa_scheme_list_length(value) > 0);
+    return summa_success();
+}
+
 /* One function plus one row: the global environment binds a procedure per row
  * at startup, and dispatch finds it by name. */
 static const SummaSchemeBuiltin SUMMA_SCHEME_BUILTINS[] = {
@@ -1919,6 +2067,12 @@ static const SummaSchemeBuiltin SUMMA_SCHEME_BUILTINS[] = {
     {"string-length", summa_scheme_builtin_string_length},
     {"string-ref", summa_scheme_builtin_string_ref},
     {"char->integer", summa_scheme_builtin_char_to_integer},
+    {"cons", summa_scheme_builtin_cons},
+    {"car", summa_scheme_builtin_car},
+    {"cdr", summa_scheme_builtin_cdr},
+    {"list", summa_scheme_builtin_list},
+    {"null?", summa_scheme_builtin_is_null},
+    {"pair?", summa_scheme_builtin_is_pair},
 };
 
 static size_t summa_scheme_builtin_count(void) {

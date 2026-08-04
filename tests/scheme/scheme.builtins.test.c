@@ -320,8 +320,9 @@ void test_scheme_builtins_string_length_takes_one_string() {
 }
 
 void test_scheme_builtins_string_ref_indexes_from_zero() {
-    assert_prints("(string-ref \"hello\" 0)", "h");
-    assert_prints("(string-ref \"hello\" 4)", "o");
+    /* Printed the `write` way, so a character comes back with its `#\` prefix. */
+    assert_prints("(string-ref \"hello\" 0)", "#\\h");
+    assert_prints("(string-ref \"hello\" 4)", "#\\o");
 }
 
 /* The message carries both halves of the mistake: what was asked for, and what
@@ -364,6 +365,142 @@ void test_scheme_builtins_string_and_char_procedures_compose() {
 
 #pragma endregion strings and characters
 
+#pragma region pairs and lists
+
+/* Prepending, which for a dynamic array means a fresh list of length n+1. */
+void test_scheme_builtins_cons_prepends_to_a_list() {
+    assert_prints("(cons 1 '(2 3))", "(1 2 3)");
+    assert_prints("(cons 1 '())", "(1)");
+    assert_prints("(cons \"a\" '(\"b\"))", "(\"a\" \"b\")");
+}
+
+/* A list head nests rather than splices -- `(cons '(1) '(2))` is a two-element
+ * list whose first element is itself a list, not `(1 2)`. */
+void test_scheme_builtins_cons_nests_a_list_head() {
+    assert_prints("(cons '(1) '(2))", "((1) 2)");
+    assert_prints("(cons '() '())", "(())");
+}
+
+/* Lists are dynamic arrays, so an improper pair has nothing to be. Saying so
+ * beats quietly answering `(1 2)`, which is a different value. */
+void test_scheme_builtins_cons_rejects_an_improper_pair() {
+    assert_fails_with("(cons 1 2)", "cons - argument 2 must be list, got integer (there are no improper pairs)");
+    assert_fails_with("(cons 1 \"x\")", "cons - argument 2 must be list, got string (there are no improper pairs)");
+    /* An empty vector is not an empty list, so it is not a tail either. */
+    assert_fails_with("(cons 1 #())", "cons - argument 2 must be list, got vector (there are no improper pairs)");
+}
+
+void test_scheme_builtins_cons_takes_exactly_two_arguments() {
+    assert_fails_with("(cons)", "cons - expects 2 argument(s), got 0");
+    assert_fails_with("(cons 1)", "cons - expects 2 argument(s), got 1");
+    assert_fails_with("(cons 1 '(2) 3)", "cons - expects 2 argument(s), got 3");
+}
+
+void test_scheme_builtins_car_gives_the_first_element() {
+    assert_prints("(car '(1 2 3))", "1");
+    assert_prints("(car '(1))", "1");
+    assert_prints("(car '((1 2) 3))", "(1 2)");
+    assert_prints("(car (cons 9 '(1)))", "9");
+}
+
+/* The tail, and an exhausted one is `()` rather than an error -- that is the
+ * base case every recursion over a list stops on. */
+void test_scheme_builtins_cdr_gives_the_rest() {
+    assert_prints("(cdr '(1 2 3))", "(2 3)");
+    assert_prints("(cdr '(1 2))", "(2)");
+    assert_prints("(cdr '(1))", "()");
+    assert_prints("(cdr '((1 2) 3))", "(3)");
+}
+
+/* Unlike `cdr` of a one-element list, neither has an answer to give. */
+void test_scheme_builtins_car_and_cdr_reject_the_empty_list() {
+    assert_fails_with("(car '())", "car - expects a non-empty list");
+    assert_fails_with("(cdr '())", "cdr - expects a non-empty list");
+    assert_fails_with("(car (list))", "car - expects a non-empty list");
+    assert_fails_with("(cdr (cdr '(1)))", "cdr - expects a non-empty list");
+}
+
+void test_scheme_builtins_car_and_cdr_take_one_list() {
+    assert_fails_with("(car)", "car - expects 1 argument(s), got 0");
+    assert_fails_with("(cdr '(1) '(2))", "cdr - expects 1 argument(s), got 2");
+    assert_fails_with("(car 1)", "car - argument 1 must be list, got integer");
+    assert_fails_with("(cdr \"ab\")", "cdr - argument 1 must be list, got string");
+    /* Again the vector: a different type, not a list with elements in it. */
+    assert_fails_with("(car #(1 2))", "car - argument 1 must be list, got vector");
+}
+
+/* Variadic down to zero, and every operand deep-copied on the way in. */
+void test_scheme_builtins_list_collects_its_arguments() {
+    assert_prints("(list)", "()");
+    assert_prints("(list 1 2 3)", "(1 2 3)");
+    assert_prints("(list 1 \"a\" #\\b '(2))", "(1 \"a\" #\\b (2))");
+    assert_prints("(list (+ 1 1) (* 2 3))", "(2 6)");
+}
+
+/* The empty list only. `#()` is an empty *vector* -- a distinct type, and the
+ * case a bare length check would get wrong. */
+void test_scheme_builtins_null_tests_for_the_empty_list() {
+    assert_prints("(null? '())", "#t");
+    assert_prints("(null? (list))", "#t");
+    assert_prints("(null? (cdr '(1)))", "#t");
+    assert_prints("(null? '(1))", "#f");
+    assert_prints("(null? #())", "#f");
+    assert_prints("(null? 0)", "#f");
+    assert_prints("(null? \"\")", "#f");
+    assert_prints("(null? #f)", "#f");
+}
+
+/* The complement of `null?` over lists, and #f for every other type -- a
+ * non-list is not an error to either of them. */
+void test_scheme_builtins_pair_tests_for_a_non_empty_list() {
+    assert_prints("(pair? '(1))", "#t");
+    assert_prints("(pair? '(1 2))", "#t");
+    assert_prints("(pair? '(()))", "#t");
+    assert_prints("(pair? '())", "#f");
+    assert_prints("(pair? #(1))", "#f");
+    assert_prints("(pair? 1)", "#f");
+    assert_prints("(pair? \"ab\")", "#f");
+}
+
+void test_scheme_builtins_null_and_pair_take_exactly_one_argument() {
+    assert_fails_with("(null?)", "null? - expects 1 argument(s), got 0");
+    assert_fails_with("(null? '() '())", "null? - expects 1 argument(s), got 2");
+    assert_fails_with("(pair?)", "pair? - expects 1 argument(s), got 0");
+    assert_fails_with("(pair? 1 2)", "pair? - expects 1 argument(s), got 2");
+}
+
+/* The source list is gone before the result is printed: `summa_scheme_apply`
+ * frees the argument list the instant dispatch returns, and a call frame goes
+ * with the call. Anything handed back that still pointed into either would be
+ * freed memory here, which is what ASan catches on this suite. */
+void test_scheme_builtins_pair_results_outlive_the_list_they_came_from() {
+    assert_prints("(car (list (+ 1 1) 5))", "2");
+    assert_prints("(cdr (list 1 (+ 2 3)))", "(5)");
+    /* A nested element, so the copy has to be deep rather than one level. */
+    assert_prints("(car (list (list 1 2) 3))", "(1 2)");
+    assert_prints("(car (cdr (list 1 (list \"a\") 3)))", "(\"a\")");
+    assert_prints("(define (head xs) (car xs))"
+                  "(head (list 1 2))",
+                  "1");
+    assert_prints("(define (tail xs) (cdr xs))"
+                  "(tail (list 1 \"b\" 3))",
+                  "(\"b\" 3)");
+    assert_prints("(let ((xs (list 1 2 3))) (cdr xs))", "(2 3)");
+    assert_prints("(cons 0 (cdr (list 1 2)))", "(0 2)");
+}
+
+/* Nothing shares structure -- `cdr` copies -- so a name rebound after the fact
+ * cannot be seen through a tail taken before it. */
+void test_scheme_builtins_list_results_do_not_share_structure() {
+    assert_prints("(define xs (list 1 2 3))"
+                  "(define ys (cdr xs))"
+                  "(set! xs (list 9))"
+                  "ys",
+                  "(2 3)");
+}
+
+#pragma endregion pairs and lists
+
 #pragma region composition
 
 /* Every builtin is reachable by name from a fresh global environment -- the
@@ -380,6 +517,23 @@ void test_scheme_builtins_give_recursion_a_numeric_base_case() {
     assert_prints("(define (count-down n acc) (if (zero? n) acc (count-down (- n 1) (+ acc n))))"
                   "(count-down 10 0)",
                   "55");
+}
+
+/* What the list procedures are for: a recursion whose base case is `null?` and
+ * whose step is `cdr`, which is the shape every program over a list takes.
+ * Ten elements -- evaluation is a plain C recursion, so a long list would meet
+ * SUMMA_SCHEME_MAX_DEPTH rather than prove anything more. */
+void test_scheme_builtins_recurse_over_a_list() {
+    assert_prints("(define (sum xs) (if (null? xs) 0 (+ (car xs) (sum (cdr xs)))))"
+                  "(sum (list 1 2 3 4 5 6 7 8 9 10))",
+                  "55");
+    assert_prints("(define (length xs) (if (null? xs) 0 (+ 1 (length (cdr xs)))))"
+                  "(length '(a b c d e))",
+                  "5");
+    /* Built back up as well as taken apart, and `pair?` deciding the step. */
+    assert_prints("(define (reverse xs acc) (if (pair? xs) (reverse (cdr xs) (cons (car xs) acc)) acc))"
+                  "(reverse '(1 2 3) '())",
+                  "(3 2 1)");
 }
 
 #pragma endregion composition
@@ -430,8 +584,24 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_scheme_builtins_char_to_integer_takes_one_character);
     SUMMA_TEST_RUN(test_scheme_builtins_string_and_char_procedures_compose);
 
+    SUMMA_TEST_RUN(test_scheme_builtins_cons_prepends_to_a_list);
+    SUMMA_TEST_RUN(test_scheme_builtins_cons_nests_a_list_head);
+    SUMMA_TEST_RUN(test_scheme_builtins_cons_rejects_an_improper_pair);
+    SUMMA_TEST_RUN(test_scheme_builtins_cons_takes_exactly_two_arguments);
+    SUMMA_TEST_RUN(test_scheme_builtins_car_gives_the_first_element);
+    SUMMA_TEST_RUN(test_scheme_builtins_cdr_gives_the_rest);
+    SUMMA_TEST_RUN(test_scheme_builtins_car_and_cdr_reject_the_empty_list);
+    SUMMA_TEST_RUN(test_scheme_builtins_car_and_cdr_take_one_list);
+    SUMMA_TEST_RUN(test_scheme_builtins_list_collects_its_arguments);
+    SUMMA_TEST_RUN(test_scheme_builtins_null_tests_for_the_empty_list);
+    SUMMA_TEST_RUN(test_scheme_builtins_pair_tests_for_a_non_empty_list);
+    SUMMA_TEST_RUN(test_scheme_builtins_null_and_pair_take_exactly_one_argument);
+    SUMMA_TEST_RUN(test_scheme_builtins_pair_results_outlive_the_list_they_came_from);
+    SUMMA_TEST_RUN(test_scheme_builtins_list_results_do_not_share_structure);
+
     SUMMA_TEST_RUN(test_scheme_builtins_are_all_bound_in_the_global_environment);
     SUMMA_TEST_RUN(test_scheme_builtins_give_recursion_a_numeric_base_case);
+    SUMMA_TEST_RUN(test_scheme_builtins_recurse_over_a_list);
 
     return summa_test_end();
 }
