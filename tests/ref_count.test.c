@@ -13,6 +13,11 @@
 #define SUMMA_TEST_IMPLEMENTATION
 #include <summa/test/test.h>
 
+/* An owning payload needs a type that owns something. SummaString is the
+ * smallest one in the repo, and the destructor case that matters. */
+#define SUMMA_STRING_IMPLEMENTATION
+#include <summa/string/string.h>
+
 #include <stdint.h>
 #include <string.h>
 
@@ -204,6 +209,119 @@ void test_ref_count_scoped_inside_a_branch() {
     SUMMA_TEST_ASSERT_NULL(ref_count_release(rc));
 }
 
+/* ── Destructors ──────────────────────────────────────────────────────────
+ *
+ * Without one, a reference is released as raw bytes and anything the payload
+ * owns is abandoned. These pin the three properties that makes safe: it runs
+ * exactly once, it runs only on the release that reaches zero, and it gets the
+ * payload rather than the header. */
+
+static size_t destructor_calls  = 0;
+static void*  destructor_target = nullptr;
+
+static void count_destructor(void* payload) {
+    destructor_calls++;
+    destructor_target = payload;
+}
+
+static void reset_destructor_spy(void) {
+    destructor_calls  = 0;
+    destructor_target = nullptr;
+}
+
+void test_ref_count_destructor_runs_on_final_release() {
+    reset_destructor_spy();
+    RefCount rc = ref_count_make_with_destructor(int, count_destructor);
+    SUMMA_TEST_ASSERT_EQ(0u, destructor_calls);
+    SUMMA_TEST_ASSERT_NULL(ref_count_release(rc));
+    SUMMA_TEST_ASSERT_EQ(1u, destructor_calls);
+}
+
+/* The whole point of hanging it off the zero transition: an owner letting go
+ * while others remain must not tear down what they are still using. */
+void test_ref_count_destructor_does_not_run_while_owners_remain() {
+    reset_destructor_spy();
+    RefCount rc = ref_count_make_with_destructor(int, count_destructor);
+    ref_count_acquire(rc);
+    ref_count_acquire(rc);
+
+    SUMMA_TEST_ASSERT_EQ(rc, ref_count_release(rc));
+    SUMMA_TEST_ASSERT_EQ(0u, destructor_calls);
+    SUMMA_TEST_ASSERT_EQ(rc, ref_count_release(rc));
+    SUMMA_TEST_ASSERT_EQ(0u, destructor_calls);
+
+    SUMMA_TEST_ASSERT_NULL(ref_count_release(rc));
+    SUMMA_TEST_ASSERT_EQ(1u, destructor_calls);
+}
+
+/* The header is what `rc` points at; the destructor is handed what the caller
+ * asked for storage for. Getting this backwards type-checks and corrupts. */
+void test_ref_count_destructor_receives_the_payload() {
+    reset_destructor_spy();
+    RefCount rc       = ref_count_make_with_destructor(Payload, count_destructor);
+    void*    expected = ref_count_as(rc, void*);
+    ref_count_release(rc);
+    SUMMA_TEST_ASSERT_EQ(expected, destructor_target);
+}
+
+/* A null hook is the pre-destructor behavior, and ref_count_make must keep
+ * giving exactly that. */
+void test_ref_count_make_leaves_the_destructor_null() {
+    RefCount rc = ref_count_make(int);
+    SUMMA_TEST_ASSERT_NULL(rc->destroy);
+    SUMMA_TEST_ASSERT_NULL(ref_count_release(rc));
+}
+
+void test_ref_count_destructor_survives_acquire_release_churn() {
+    reset_destructor_spy();
+    RefCount rc = ref_count_make_with_destructor(int, count_destructor);
+    for (size_t i = 0; i < 16; i++) {
+        ref_count_acquire(rc);
+    }
+    for (size_t i = 0; i < 16; i++) {
+        SUMMA_TEST_ASSERT_EQ(rc, ref_count_release(rc));
+    }
+    SUMMA_TEST_ASSERT_EQ(0u, destructor_calls);
+    SUMMA_TEST_ASSERT_NULL(ref_count_release(rc));
+    SUMMA_TEST_ASSERT_EQ(1u, destructor_calls);
+}
+
+/* The case the feature exists for, and the one silently broken before it: a
+ * payload that is itself a handle. The bare free released the SummaString
+ * handle's storage and abandoned its elements buffer -- a leak ASan sees on
+ * Linux and `leaks` sees here. */
+static void free_scheme_string(void* payload) {
+    summa_string_free(*(SummaString*)payload);
+}
+
+void test_ref_count_destructor_releases_an_owning_payload() {
+    RefCount rc                     = ref_count_make_with_destructor(SummaString, free_scheme_string);
+    *ref_count_as(rc, SummaString*) = summa_string_make("hello");
+    SUMMA_TEST_ASSERT_EQ_STR("hello", (*ref_count_as(rc, SummaString*))->value);
+    SUMMA_TEST_ASSERT_NULL(ref_count_release(rc));
+}
+
+/* Reentrancy: a destructor releasing another reference is the environment /
+ * closure case this was built for, so it has to work rather than merely not
+ * crash. The inner reference is owned by the outer one's payload. */
+static void release_inner(void* payload) {
+    destructor_calls++;
+    ref_count_release(*(RefCount*)payload);
+}
+
+void test_ref_count_destructor_may_release_another_reference() {
+    reset_destructor_spy();
+    RefCount inner = ref_count_make_with_destructor(int, count_destructor);
+
+    RefCount outer                  = ref_count_make_with_destructor(RefCount, release_inner);
+    *ref_count_as(outer, RefCount*) = inner;
+
+    /* Outer's teardown runs, which runs inner's: two calls through one
+     * release, and neither reference outlives it. */
+    SUMMA_TEST_ASSERT_NULL(ref_count_release(outer));
+    SUMMA_TEST_ASSERT_EQ(2u, destructor_calls);
+}
+
 int main(int argc, char** argv) {
     summa_test_begin("ref_count", argc, argv);
     SUMMA_TEST_RUN(test_ref_count_make_returns_live_reference);
@@ -221,5 +339,13 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_ref_count_scoped_restores_the_count);
     SUMMA_TEST_RUN(test_ref_count_scoped_keeps_payload_alive);
     SUMMA_TEST_RUN(test_ref_count_scoped_inside_a_branch);
+
+    SUMMA_TEST_RUN(test_ref_count_destructor_runs_on_final_release);
+    SUMMA_TEST_RUN(test_ref_count_destructor_does_not_run_while_owners_remain);
+    SUMMA_TEST_RUN(test_ref_count_destructor_receives_the_payload);
+    SUMMA_TEST_RUN(test_ref_count_make_leaves_the_destructor_null);
+    SUMMA_TEST_RUN(test_ref_count_destructor_survives_acquire_release_churn);
+    SUMMA_TEST_RUN(test_ref_count_destructor_releases_an_owning_payload);
+    SUMMA_TEST_RUN(test_ref_count_destructor_may_release_another_reference);
     return summa_test_end();
 }
