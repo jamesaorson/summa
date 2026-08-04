@@ -547,9 +547,17 @@ SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment
         }
     skip_string_push:
     }
-    if (mode == SummaSchemeReadModeString) {
+    switch (mode) {
+    case SummaSchemeReadModeMinus:
+    case SummaSchemeReadModePlus: {
+        mode = SummaSchemeReadModeSymbol;
+    } break;
+    case SummaSchemeReadModeString: {
         err = summa_make_error("summa_scheme_read - string was not closed");
         goto cleanup;
+    }
+    default:
+        break;
     }
 token_done:
     // summa_scheme_read_handle_token_finish:
