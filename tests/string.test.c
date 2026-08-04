@@ -40,6 +40,10 @@ void test_string_make_empty() {
         /* summa_array_make_empty eagerly allocates the default capacity, so
          * value must not be a dangling/garbage pointer. */
         SUMMA_TEST_ASSERT_NOT_NULL(str->value);
+        /* And the allocation is terminated, not merely present -- reading it as
+         * a C string has to be safe before anything is pushed. */
+        SUMMA_TEST_ASSERT_EQ('\0', str->value[0]);
+        SUMMA_TEST_ASSERT_EQ_STR("", str->value);
     }
 }
 
@@ -51,6 +55,9 @@ void test_string_clear() {
         /* Clearing is a logical reset, not a dealloc: capacity (and the room it
          * reserves for a null byte) is untouched. */
         SUMMA_TEST_ASSERT_EQ(cap, str->capacity);
+        /* A logical reset still has to terminate: without this the old contents
+         * read straight back through value. */
+        SUMMA_TEST_ASSERT_EQ_STR("", str->value);
     }
 }
 
@@ -139,6 +146,193 @@ void test_string_copy_cstr_empty_string() {
     }
 }
 
+#pragma region push
+
+void test_string_push_appends() {
+    SCOPED_STRING(str, summa_string_make_empty()) {
+        summa_string_push(str, 'a');
+        summa_string_push(str, 'b');
+        summa_string_push(str, 'c');
+
+        SUMMA_TEST_ASSERT_EQ(3u, str->length);
+        SUMMA_TEST_ASSERT_EQ_STR("abc", str->value);
+        SUMMA_TEST_ASSERT_EQ('\0', str->value[str->length]);
+    }
+}
+
+void test_string_push_onto_existing_contents() {
+    SCOPED_STRING(str, summa_string_make("hell")) {
+        summa_string_push(str, 'o');
+
+        SUMMA_TEST_ASSERT_EQ(5u, str->length);
+        SUMMA_TEST_ASSERT_EQ_STR("hello", str->value);
+    }
+}
+
+/* A freshly made string has capacity == length + 1, so the very first push has
+ * no slack and must grow. This is the case a plain summa_array_push would get
+ * wrong, writing the terminator one byte past the allocation. */
+void test_string_push_grows_a_full_string() {
+    SCOPED_STRING(str, summa_string_make("x")) {
+        SUMMA_TEST_ASSERT_EQ(str->length + 1, str->capacity);
+
+        summa_string_push(str, 'y');
+
+        SUMMA_TEST_ASSERT_EQ_STR("xy", str->value);
+        SUMMA_TEST_ASSERT(str->capacity >= str->length + 1);
+        SUMMA_TEST_ASSERT_EQ('\0', str->value[str->length]);
+    }
+}
+
+/* Enough pushes to force several reallocations. */
+void test_string_push_many() {
+    SCOPED_STRING(str, summa_string_make_empty()) {
+        for (size_t i = 0; i < 1000; i++) {
+            summa_string_push(str, 'z');
+        }
+
+        SUMMA_TEST_ASSERT_EQ(1000u, str->length);
+        SUMMA_TEST_ASSERT_EQ('\0', str->value[str->length]);
+        SUMMA_TEST_ASSERT_EQ(1000u, strlen(str->value));
+    }
+}
+
+void test_string_push_after_clear() {
+    SCOPED_STRING(str, summa_string_make(HELLO_WORLD)) {
+        summa_string_clear(str);
+        summa_string_push(str, 'h');
+        summa_string_push(str, 'i');
+
+        SUMMA_TEST_ASSERT_EQ_STR("hi", str->value);
+    }
+}
+
+#pragma endregion push
+
+#pragma region contains and index_of
+
+void test_string_contains() {
+    SCOPED_STRING(str, summa_string_make(HELLO_WORLD)) {
+        SUMMA_TEST_ASSERT(summa_string_contains(str, 'h'));
+        SUMMA_TEST_ASSERT(summa_string_contains(str, ' '));
+        SUMMA_TEST_ASSERT(summa_string_contains(str, 'd'));
+        SUMMA_TEST_ASSERT(!summa_string_contains(str, 'z'));
+    }
+}
+
+/* The terminator is past `length`, so it is not part of the contents. */
+void test_string_does_not_contain_its_terminator() {
+    SCOPED_STRING(str, summa_string_make(HELLO_WORLD)) {
+        SUMMA_TEST_ASSERT(!summa_string_contains(str, '\0'));
+    }
+}
+
+void test_string_contains_nothing_when_empty() {
+    SCOPED_STRING(str, summa_string_make_empty()) {
+        SUMMA_TEST_ASSERT(!summa_string_contains(str, 'a'));
+    }
+}
+
+void test_string_index_of_finds_the_first_match() {
+    SCOPED_STRING(str, summa_string_make(HELLO_WORLD)) {
+        size_t index = 99;
+        SUMMA_TEST_ASSERT(summa_string_index_of(str, 'l', &index));
+        SUMMA_TEST_ASSERT_EQ(2u, index);
+
+        SUMMA_TEST_ASSERT(summa_string_index_of(str, ' ', &index));
+        SUMMA_TEST_ASSERT_EQ(5u, index);
+    }
+}
+
+void test_string_index_of_reports_a_miss() {
+    SCOPED_STRING(str, summa_string_make(HELLO_WORLD)) {
+        size_t index = 99;
+        SUMMA_TEST_ASSERT(!summa_string_index_of(str, 'z', &index));
+        /* Left alone on a miss, as the array version does. */
+        SUMMA_TEST_ASSERT_EQ(99u, index);
+    }
+}
+
+void test_string_index_of_accepts_a_null_out_index() {
+    SCOPED_STRING(str, summa_string_make(HELLO_WORLD)) {
+        SUMMA_TEST_ASSERT(summa_string_index_of(str, 'w', nullptr));
+    }
+}
+
+#pragma endregion contains and index_of
+
+#pragma region remove_at and set_at
+
+void test_string_remove_at() {
+    SCOPED_STRING(str, summa_string_make("abcd")) {
+        summa_string_remove_at(str, 1);
+
+        SUMMA_TEST_ASSERT_EQ(3u, str->length);
+        SUMMA_TEST_ASSERT_EQ_STR("acd", str->value);
+        SUMMA_TEST_ASSERT_EQ('\0', str->value[str->length]);
+    }
+}
+
+void test_string_remove_at_first_and_last() {
+    SCOPED_STRING(str, summa_string_make("abc")) {
+        summa_string_remove_at(str, 0);
+        SUMMA_TEST_ASSERT_EQ_STR("bc", str->value);
+
+        summa_string_remove_at(str, 1);
+        SUMMA_TEST_ASSERT_EQ_STR("b", str->value);
+
+        summa_string_remove_at(str, 0);
+        SUMMA_TEST_ASSERT_EQ_STR("", str->value);
+        SUMMA_TEST_ASSERT_EQ(0u, str->length);
+    }
+}
+
+void test_string_remove_at_ignores_an_out_of_range_index() {
+    SCOPED_STRING(str, summa_string_make("abc")) {
+        summa_string_remove_at(str, 3);
+        summa_string_remove_at(str, 100);
+
+        SUMMA_TEST_ASSERT_EQ(3u, str->length);
+        SUMMA_TEST_ASSERT_EQ_STR("abc", str->value);
+    }
+}
+
+void test_string_set_at() {
+    SCOPED_STRING(str, summa_string_make("cat")) {
+        summa_string_set_at(str, 0, 'b');
+
+        SUMMA_TEST_ASSERT_EQ_STR("bat", str->value);
+        SUMMA_TEST_ASSERT_EQ(3u, str->length);
+    }
+}
+
+void test_string_set_at_ignores_an_out_of_range_index() {
+    SCOPED_STRING(str, summa_string_make("cat")) {
+        summa_string_set_at(str, 3, 'x');
+        summa_string_set_at(str, 100, 'x');
+
+        SUMMA_TEST_ASSERT_EQ_STR("cat", str->value);
+        SUMMA_TEST_ASSERT_EQ(3u, str->length);
+    }
+}
+
+#pragma endregion remove_at and set_at
+
+/* Building a token one character at a time, then reading it back as a C string
+ * -- what a reader does, and the reason push exists. */
+void test_string_accumulate_then_compare() {
+    SCOPED_STRING(built, summa_string_make_empty())
+    SCOPED_STRING(expected, summa_string_make("define")) {
+        const char* source = "define";
+        for (const char* c = source; *c; c++) {
+            summa_string_push(built, *c);
+        }
+
+        SUMMA_TEST_ASSERT_EQ(0, summa_string_cmp(built, expected));
+        SUMMA_TEST_ASSERT_EQ(expected->length, built->length);
+    }
+}
+
 int main(int argc, char** argv) {
     summa_test_begin("scheme.string", argc, argv);
     SUMMA_TEST_RUN(test_string_make);
@@ -153,5 +347,26 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_string_copy_cstr_shrinks_length_but_keeps_capacity);
     SUMMA_TEST_RUN(test_string_copy_cstr_into_empty_destination);
     SUMMA_TEST_RUN(test_string_copy_cstr_empty_string);
+
+    SUMMA_TEST_RUN(test_string_push_appends);
+    SUMMA_TEST_RUN(test_string_push_onto_existing_contents);
+    SUMMA_TEST_RUN(test_string_push_grows_a_full_string);
+    SUMMA_TEST_RUN(test_string_push_many);
+    SUMMA_TEST_RUN(test_string_push_after_clear);
+
+    SUMMA_TEST_RUN(test_string_contains);
+    SUMMA_TEST_RUN(test_string_does_not_contain_its_terminator);
+    SUMMA_TEST_RUN(test_string_contains_nothing_when_empty);
+    SUMMA_TEST_RUN(test_string_index_of_finds_the_first_match);
+    SUMMA_TEST_RUN(test_string_index_of_reports_a_miss);
+    SUMMA_TEST_RUN(test_string_index_of_accepts_a_null_out_index);
+
+    SUMMA_TEST_RUN(test_string_remove_at);
+    SUMMA_TEST_RUN(test_string_remove_at_first_and_last);
+    SUMMA_TEST_RUN(test_string_remove_at_ignores_an_out_of_range_index);
+    SUMMA_TEST_RUN(test_string_set_at);
+    SUMMA_TEST_RUN(test_string_set_at_ignores_an_out_of_range_index);
+
+    SUMMA_TEST_RUN(test_string_accumulate_then_compare);
     return summa_test_end();
 }

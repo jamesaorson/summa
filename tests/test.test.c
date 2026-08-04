@@ -103,6 +103,113 @@ void test_scoped_value_single_statement_body() {
     SUMMA_TEST_ASSERT_EQ(1, destroy_calls);
 }
 
+/* ── SUMMA_TEST_TODO ──────────────────────────────────────────────────────
+ *
+ * What TODO changes is how SUMMA_TEST_RUN classifies a case afterwards, so
+ * these run a case inside a case. SUMMA_TEST_RUN both prints and moves the
+ * tally, so the surrounding context is put aside and restored -- and the
+ * filter is cleared along the way, since ctest invokes this binary with one
+ * case name and the nested run would otherwise skip itself.
+ *
+ * The nested runs print their own "TODO"/"FAIL" lines into the transcript.
+ * That is the behaviour being checked, not stray output. */
+static summa_test_ctx_t borrow_ctx(void) {
+    const summa_test_ctx_t saved = summa_test_ctx;
+    summa_test_ctx.tests_passed  = 0;
+    summa_test_ctx.tests_failed  = 0;
+    summa_test_ctx.tests_todo    = 0;
+    summa_test_ctx._filter       = nullptr;
+    summa_test_ctx._list_mode    = 0;
+    return saved;
+}
+
+static void inner_marked_and_failing(void) {
+    SUMMA_TEST_TODO("a gap that has not been closed yet");
+    SUMMA_TEST_ASSERT(false);
+}
+
+static void inner_marked_and_passing(void) {
+    SUMMA_TEST_TODO("a gap that has since been closed");
+    SUMMA_TEST_ASSERT(true);
+}
+
+static void inner_unmarked_and_failing(void) {
+    SUMMA_TEST_ASSERT(false);
+}
+
+void test_todo_marks_the_reason_on_the_context() {
+    summa_test_ctx._todo        = 0;
+    summa_test_ctx._todo_reason = nullptr;
+
+    SUMMA_TEST_TODO("why it cannot pass");
+
+    SUMMA_TEST_ASSERT_EQ(1, summa_test_ctx._todo);
+    SUMMA_TEST_ASSERT_EQ_STR("why it cannot pass", summa_test_ctx._todo_reason);
+
+    /* Leave the flag off, or this very case would be classified as TODO. */
+    summa_test_ctx._todo        = 0;
+    summa_test_ctx._todo_reason = nullptr;
+}
+
+/* The point of the marker: a known-failing case does not fail the suite. */
+void test_todo_failure_counts_as_todo_not_failed() {
+    const summa_test_ctx_t saved = borrow_ctx();
+    SUMMA_TEST_RUN(inner_marked_and_failing);
+    const int passed = summa_test_ctx.tests_passed;
+    const int failed = summa_test_ctx.tests_failed;
+    const int todo   = summa_test_ctx.tests_todo;
+    summa_test_ctx   = saved;
+
+    SUMMA_TEST_ASSERT_EQ(0, passed);
+    SUMMA_TEST_ASSERT_EQ(0, failed);
+    SUMMA_TEST_ASSERT_EQ(1, todo);
+}
+
+/* And the other half: once the gap closes, the marker has to come off, so a
+ * case that passes while marked is a failure. */
+void test_todo_passing_while_marked_is_a_failure() {
+    const summa_test_ctx_t saved = borrow_ctx();
+    SUMMA_TEST_RUN(inner_marked_and_passing);
+    const int passed = summa_test_ctx.tests_passed;
+    const int failed = summa_test_ctx.tests_failed;
+    const int todo   = summa_test_ctx.tests_todo;
+    summa_test_ctx   = saved;
+
+    SUMMA_TEST_ASSERT_EQ(0, passed);
+    SUMMA_TEST_ASSERT_EQ(1, failed);
+    SUMMA_TEST_ASSERT_EQ(0, todo);
+}
+
+/* An ordinary failure is still an ordinary failure. */
+void test_todo_does_not_change_unmarked_failures() {
+    const summa_test_ctx_t saved = borrow_ctx();
+    SUMMA_TEST_RUN(inner_unmarked_and_failing);
+    const int failed = summa_test_ctx.tests_failed;
+    const int todo   = summa_test_ctx.tests_todo;
+    summa_test_ctx   = saved;
+
+    SUMMA_TEST_ASSERT_EQ(1, failed);
+    SUMMA_TEST_ASSERT_EQ(0, todo);
+}
+
+/* The exit code is what CI reads: todos are reported, but only real failures
+ * make the suite non-zero. */
+void test_todo_alone_leaves_the_suite_passing() {
+    const summa_test_ctx_t saved = borrow_ctx();
+
+    summa_test_ctx.tests_todo = 2;
+    const int todo_only       = summa_test_end();
+
+    summa_test_ctx.tests_todo   = 2;
+    summa_test_ctx.tests_failed = 1;
+    const int with_a_failure    = summa_test_end();
+
+    summa_test_ctx = saved;
+
+    SUMMA_TEST_ASSERT_EQ(0, todo_only);
+    SUMMA_TEST_ASSERT_EQ(1, with_a_failure);
+}
+
 int main(int argc, char** argv) {
     summa_test_begin("test", argc, argv);
     SUMMA_TEST_RUN(test_scoped_value_binds_and_destroys);
@@ -111,5 +218,11 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_scoped_value_destroys_after_failed_assertion);
     SUMMA_TEST_RUN(test_scoped_value_sequential_scopes_are_independent);
     SUMMA_TEST_RUN(test_scoped_value_single_statement_body);
+
+    SUMMA_TEST_RUN(test_todo_marks_the_reason_on_the_context);
+    SUMMA_TEST_RUN(test_todo_failure_counts_as_todo_not_failed);
+    SUMMA_TEST_RUN(test_todo_passing_while_marked_is_a_failure);
+    SUMMA_TEST_RUN(test_todo_does_not_change_unmarked_failures);
+    SUMMA_TEST_RUN(test_todo_alone_leaves_the_suite_passing);
     return summa_test_end();
 }

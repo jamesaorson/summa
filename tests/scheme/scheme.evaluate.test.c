@@ -111,7 +111,10 @@ void test_scheme_evaluate_integer() {
     }
 }
 
-void test_scheme_evaluate_list() {
+/* A list in evaluated position is a combination, so one whose head is not a
+ * procedure fails to apply rather than standing for itself. Quoting is what
+ * yields the list as data. */
+void test_scheme_evaluate_list_of_data_is_not_applicable() {
     SCOPED_GLOBAL_ENV(env)
     SCOPED_LIST(nested, summa_list_make_empty()) {
         SummaSchemeValue values[5] = {
@@ -126,14 +129,48 @@ void test_scheme_evaluate_list() {
             SummaSchemeValue out   = {};
             SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
 
-            SUMMA_TEST_ASSERT(!error.had);
-            SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
+            SUMMA_TEST_ASSERT(error.had);
+            SUMMA_TEST_ASSERT_EQ_STR("Wrong type to apply: #t", error.message);
 
-            /* `out` is an output parameter rather than something this scope
-             * made, so it is still released by hand -- but as a value, since
-             * the copy owns its elements outright. */
             summa_scheme_value_free(&out);
         }
+    }
+}
+
+/* Only the operator is reached before the failure -- the operands are never
+ * evaluated, so a combination cannot fail halfway. */
+void test_scheme_evaluate_empty_list_is_not_a_combination() {
+    SCOPED_GLOBAL_ENV(env)
+    SCOPED_LIST(empty, summa_list_make_empty()) {
+        SummaSchemeValue in    = summa_make_scheme_list(empty);
+        SummaSchemeValue out   = {};
+        SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
+
+        SUMMA_TEST_ASSERT(error.had);
+        summa_scheme_value_free(&out);
+    }
+}
+
+/* Quoting is the way to get the list itself. */
+void test_scheme_evaluate_quoted_list_is_data() {
+    SCOPED_GLOBAL_ENV(env)
+    SCOPED_FORM(form, summa_list_make_empty()) {
+        SummaList quoted = summa_list_make_empty();
+        summa_list_push(quoted, &summa_make_scheme_integer(1));
+        summa_list_push(quoted, &summa_make_scheme_integer(2));
+
+        summa_list_push(form, &summa_make_scheme_symbol("quote"));
+        summa_list_push(form, &summa_make_scheme_list(quoted));
+
+        SummaSchemeValue in    = summa_make_scheme_list(form);
+        SummaSchemeValue out   = {};
+        SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
+
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT_EQ(SummaSchemeListType, out.type);
+        SUMMA_TEST_ASSERT_EQ(2, out.value.list.value->length);
+
+        summa_scheme_value_free(&out);
     }
 }
 
@@ -252,7 +289,8 @@ void test_scheme_evaluate_application_non_numeric_argument() {
     }
 }
 
-/* A list whose head is not a bound procedure is data, not a call. */
+/* An operator that names nothing is an unbound variable, reported as such
+ * rather than leaving the form to stand for itself. */
 void test_scheme_evaluate_application_unbound_head() {
     SCOPED_GLOBAL_ENV(env)
     SCOPED_FORM(form, summa_list_make_empty()) {
@@ -263,9 +301,8 @@ void test_scheme_evaluate_application_unbound_head() {
         SummaSchemeValue out   = {};
         SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
 
-        SUMMA_TEST_ASSERT(!error.had);
-        SUMMA_TEST_ASSERT_EQ(SummaSchemeListType, out.type);
-        SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
+        SUMMA_TEST_ASSERT(error.had);
+        SUMMA_TEST_ASSERT_EQ_STR("Unbound variable: " WORLD, error.message);
 
         summa_scheme_value_free(&out);
     }
@@ -285,17 +322,19 @@ void test_scheme_evaluate_string() {
     }
 }
 
-void test_scheme_evaluate_symbol() {
+/* A symbol in evaluated position is a variable reference, so an unbound one is
+ * an error. Quoting is what yields the symbol itself. */
+void test_scheme_evaluate_unbound_symbol_is_an_error() {
     SCOPED_GLOBAL_ENV(env) {
-        SummaSchemeValue in = summa_make_scheme_symbol(HELLO);
-        SummaSchemeValue out;
+        SummaSchemeValue in    = summa_make_scheme_symbol(HELLO);
+        SummaSchemeValue out   = {};
         SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
 
-        SUMMA_TEST_ASSERT(!error.had);
-        SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
+        SUMMA_TEST_ASSERT(error.had);
+        SUMMA_TEST_ASSERT_EQ_STR("Unbound variable: " HELLO, error.message);
 
+        summa_scheme_value_free(&out);
         summa_string_free(in.value.symbol.value);
-        summa_string_free(out.value.symbol.value);
     }
 }
 
@@ -325,7 +364,9 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_scheme_evaluate_character);
     SUMMA_TEST_RUN(test_scheme_evaluate_floating);
     SUMMA_TEST_RUN(test_scheme_evaluate_integer);
-    SUMMA_TEST_RUN(test_scheme_evaluate_list);
+    SUMMA_TEST_RUN(test_scheme_evaluate_list_of_data_is_not_applicable);
+    SUMMA_TEST_RUN(test_scheme_evaluate_empty_list_is_not_a_combination);
+    SUMMA_TEST_RUN(test_scheme_evaluate_quoted_list_is_data);
     SUMMA_TEST_RUN(test_scheme_evaluate_procedure);
     SUMMA_TEST_RUN(test_scheme_evaluate_application_integer);
     SUMMA_TEST_RUN(test_scheme_evaluate_application_floating);
@@ -334,7 +375,7 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_scheme_evaluate_application_non_numeric_argument);
     SUMMA_TEST_RUN(test_scheme_evaluate_application_unbound_head);
     SUMMA_TEST_RUN(test_scheme_evaluate_string);
-    SUMMA_TEST_RUN(test_scheme_evaluate_symbol);
+    SUMMA_TEST_RUN(test_scheme_evaluate_unbound_symbol_is_an_error);
     SUMMA_TEST_RUN(test_scheme_evaluate_vector);
 
     return summa_test_end();

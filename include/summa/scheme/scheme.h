@@ -231,7 +231,32 @@ bool summa_scheme_truthy(const SummaSchemeValue* value);
 
 #pragma region REPL
 
-SummaSchemeError summa_scheme_read(const SummaSchemeEnvironment env, const char* inputText, SummaSchemeValue* out);
+/* Reads one datum from `input`.
+ *
+ * `rest`, when not null, is set past the datum and past any whitespace or
+ * comment following it, so it lands either on the next datum's first character
+ * or on the terminating NUL. That makes the driver loop `while (*cursor)`:
+ *
+ *     const char* cursor = line;
+ *     while (*cursor) {
+ *         err = summa_scheme_read(env, cursor, &cursor, &value);
+ *     }
+ *
+ * `*rest` is untouched on error. Input holding no datum at all is an error, so
+ * the loop above never calls in with nothing left to read. */
+SummaSchemeError
+summa_scheme_read(const SummaSchemeEnvironment env, const char* input, const char** rest, SummaSchemeValue* out);
+
+/* Translates one R7RS string escape (7.1.1). `input` points at the backslash;
+ * `*out` receives the single byte the sequence denotes and `rest`, when not
+ * null, is set just past the sequence. Both are untouched on error.
+ *
+ * `\a \b \t \n \r` are the named control characters; `\" \\ \|` stand for
+ * themselves; `\x<hex>;` is a byte in hex. Everything else -- including the
+ * line-continuation escape, which spans a newline and yields no byte at all --
+ * is an error. */
+SummaSchemeError summa_scheme_read_escape(const char* input, const char** rest, char* out);
+
 SummaSchemeError
 summa_scheme_evaluate(const SummaSchemeEnvironment env, const SummaSchemeValue in, SummaSchemeValue* out);
 
@@ -243,6 +268,11 @@ SummaSchemeError summa_scheme_display(const SummaSchemeValue value, FILE* out);
 /* Stands in for the missing tail-call optimization: an error beats walking off
  * the C stack. Counted in evaluate frames, several per Scheme-level call. */
 #define SUMMA_SCHEME_MAX_DEPTH 2000
+
+/* The same guard for reading, which recurses once per level of nesting. Far
+ * lower than the evaluate limit because source that nests this deep is a
+ * runaway `(((((...`, not a program someone wrote. */
+#define SUMMA_SCHEME_READ_MAX_DEPTH 200
 
 #pragma endregion REPL
 
@@ -260,6 +290,10 @@ SummaSchemeError summa_scheme_procedure_dispatch(SummaSchemeEnvironment env,
 SummaSchemeError
 summa_scheme_evaluate_arguments(const SummaSchemeEnvironment env, const SummaList form, SummaList* out);
 void summa_scheme_argument_list_free(SummaList args);
+
+/* Frees a list and every value in it. Defined further down, but the reader
+ * needs it to unwind a half-built list when a datum inside it fails. */
+static void summa_scheme_list_free_deep(SummaList list);
 
 /* Evaluates form[1..], dispatches, releases them. Every call goes through here. */
 static SummaSchemeError summa_scheme_apply(const SummaSchemeEnvironment env,
@@ -282,14 +316,564 @@ static SummaSchemeError         summa_scheme_evaluate_sequence(const SummaScheme
 /* The value R7RS leaves unspecified: `(if #f #f)`, `set!`, `display`. */
 #define summa_scheme_unspecified() summa_make_scheme_boolean(false)
 
+typedef enum {
+    SummaSchemeReadModeInitial,
+    SummaSchemeReadModePlus,
+    SummaSchemeReadModeMinus,
+    SummaSchemeReadModePeriod,
+    SummaSchemeReadModeInteger,
+    SummaSchemeReadModeFloating,
+    SummaSchemeReadModeSymbol,
+    SummaSchemeReadModeString,
+} SummaSchemeReadMode;
+
+/* What a single read turned up. A close paren and an exhausted input are both
+ * ordinary outcomes inside a list -- one ends it, the other means it was never
+ * closed -- and both are errors when the top-level read is what met them, so
+ * the decision belongs to the caller rather than to the frame that saw them. */
+typedef enum {
+    SummaSchemeReadDatumValue, /* `*out` holds the datum. */
+    SummaSchemeReadDatumClose, /* A `)`, already consumed. */
+    SummaSchemeReadDatumEnd,   /* Input held nothing but atmosphere. */
+} SummaSchemeReadDatumKind;
+
+#include <ctype.h>
+
+/* A datum's text ends wherever the next one could begin, so these characters
+ * terminate an atom without being part of it. */
+static bool summa_scheme_read_is_delimiter(char c) {
+    return c == '\0' || isspace(c) || c == '(' || c == ')' || c == '"' || c == ';' || c == '\'';
+}
+
+/* Whitespace and `;` line comments carry no datum. Every read skips them
+ * first and consumes them afterwards, which is what makes `rest` land on the
+ * next datum rather than in the gap before it. Returns the offset of the first
+ * character that could start one. */
+static size_t summa_scheme_read_skip_atmosphere(const char* input) {
+    size_t i = 0;
+    for (;;) {
+        while (isspace(input[i])) {
+            i++;
+        }
+        if (input[i] != ';') {
+            return i;
+        }
+        /* A line comment runs to the newline, or to the end of input if the
+         * last line has none. */
+        while (input[i] && input[i] != '\n') {
+            i++;
+        }
+    }
+}
+
+SummaSchemeError summa_scheme_read_escape(const char* input, const char** rest, char* out) {
+    if (input[0] != '\\') {
+        return summa_make_error("summa_scheme_read_escape - input does not start with an escape");
+    }
+
+    size_t i     = 1;
+    char   value = input[i];
+    switch (value) {
+    case '\0': {
+        return summa_make_error("summa_scheme_read_escape - escape character had no character beyond");
+    }
+    case 'a': {
+        value = '\a';
+    } break;
+    case 'b': {
+        value = '\b';
+    } break;
+    case 't': {
+        value = '\t';
+    } break;
+    case 'n': {
+        value = '\n';
+    } break;
+    case 'r': {
+        value = '\r';
+    } break;
+    case '"':
+    case '\\':
+    case '|': {
+        /* Stands for itself. */
+    } break;
+    case 'x': {
+        /* `\x<hex>;` -- at least one digit, terminated by a semicolon. */
+        unsigned code   = 0;
+        size_t   digits = 0;
+        while (isxdigit(input[i + 1])) {
+            const char digit = input[++i];
+            code             = code * 16 + (unsigned)(isdigit(digit) ? digit - '0' : tolower(digit) - 'a' + 10);
+            digits++;
+            if (code > 0xFF) {
+                return summa_make_error("summa_scheme_read_escape - \\x escape is out of byte range");
+            }
+        }
+        if (digits == 0 || input[i + 1] != ';') {
+            return summa_make_error("summa_scheme_read_escape - \\x escape wants hex digits then ';'");
+        }
+        i++; /* The ';' terminator. */
+        if (code == 0) {
+            /* Tokens are C strings underneath, so an embedded NUL would
+             * truncate everything after it. */
+            return summa_make_error("summa_scheme_read_escape - \\x escape cannot produce a null character");
+        }
+        value = (char)code;
+    } break;
+    default: {
+        return summa_make_error("summa_scheme_read_escape - unknown string escape");
+    }
+    }
+
+    *out = value;
+    if (rest) {
+        *rest = input + i + 1;
+    }
+    return summa_success();
+}
+
+/* Reads one atom -- a number, symbol, boolean, character or string. `input`
+ * must start on the atom's first character, since skipping atmosphere is the
+ * caller's job, and `*rest` is left on the first character the atom did not
+ * consume. `*rest` is untouched on error. */
+static SummaSchemeError summa_scheme_read_atom(const char* input, const char** rest, SummaSchemeValue* out) {
+    /* `token` is owned for the whole function, so nothing here returns
+     * directly -- a bare `return` leaks it. Every exit sets `err` and jumps to
+     * `cleanup`, which frees the token and returns. `err` starts out
+     * successful and is only ever assigned on failure, so a success path just
+     * fills in `*out` and jumps. */
+    SummaSchemeError    err   = summa_success();
+    char                c     = '\0';
+    size_t              i     = 0;
+    SummaSchemeReadMode mode  = SummaSchemeReadModeInitial;
+    SummaString         token = summa_string_make_empty();
+    for (c = input[0]; c; c = input[++i]) {
+        /* Whatever follows `#\` is data, however much it looks like
+         * punctuation: `#\(` and `#\;` are characters. */
+        const bool after_character_prefix = token->length == 2 && token->value[0] == '#' && token->value[1] == '\\';
+        /* Nothing delimits an atom at its first character -- a leading `"`
+         * opens a string rather than ending an empty token. */
+        if (mode != SummaSchemeReadModeInitial && mode != SummaSchemeReadModeString && !after_character_prefix &&
+            summa_scheme_read_is_delimiter(c)) {
+            break;
+        }
+
+        switch (mode) {
+        case SummaSchemeReadModeInitial: {
+            switch (c) {
+            case '+': {
+                mode = SummaSchemeReadModePlus;
+            } break;
+            case '-': {
+                mode = SummaSchemeReadModeMinus;
+            } break;
+            case '.': {
+                mode = SummaSchemeReadModeFloating;
+            } break;
+            case '"': {
+                mode = SummaSchemeReadModeString;
+                goto skip_string_push;
+            } break;
+            default: {
+                if (isdigit(c)) {
+                    mode = SummaSchemeReadModeInteger;
+                } else if (!iscntrl(c)) {
+                    mode = SummaSchemeReadModeSymbol;
+                } else {
+                    err = summa_make_error("summa_scheme_read - SummaSchemeReadModeInitial character not yet handled");
+                    goto cleanup;
+                }
+            }
+            }
+        } break;
+        case SummaSchemeReadModePlus: {
+            switch (c) {
+            case '.': {
+                mode = SummaSchemeReadModeFloating;
+            } break;
+            default: {
+                if (isdigit(c)) {
+                    mode = SummaSchemeReadModeInteger;
+                    break;
+                } else {
+                    mode = SummaSchemeReadModeSymbol;
+                    break;
+                }
+            }
+            }
+        } break;
+        case SummaSchemeReadModeMinus: {
+            switch (c) {
+            case '.': {
+                mode = SummaSchemeReadModeFloating;
+            } break;
+            default: {
+                if (isdigit(c)) {
+                    mode = SummaSchemeReadModeInteger;
+                    break;
+                } else {
+                    mode = SummaSchemeReadModeSymbol;
+                    break;
+                }
+            }
+            }
+        } break;
+        case SummaSchemeReadModePeriod: {
+            switch (c) {
+            default: {
+                if (isdigit(c)) {
+                    mode = SummaSchemeReadModeFloating;
+                    break;
+                }
+                err = summa_make_error("summa_scheme_read - SummaSchemeReadModePeriod character not yet handled");
+                goto cleanup;
+            }
+            }
+        } break;
+        case SummaSchemeReadModeInteger: {
+            switch (c) {
+            case '.': {
+                mode = SummaSchemeReadModeFloating;
+            } break;
+            default: {
+                if (isdigit(c)) {
+                    break;
+                }
+                err = summa_make_error("summa_scheme_read - SummaSchemeReadModeInteger character not yet handled");
+                goto cleanup;
+            }
+            }
+        } break;
+        case SummaSchemeReadModeFloating: {
+            switch (c) {
+            case '.': {
+                mode = SummaSchemeReadModeSymbol;
+            } break;
+            default: {
+                if (isdigit(c)) {
+                    break;
+                }
+                err = summa_make_error("summa_scheme_read - SummaSchemeReadModeFloating character not yet handled");
+                goto cleanup;
+            }
+            }
+        } break;
+        case SummaSchemeReadModeSymbol: {
+            // No-op
+            break;
+        }
+        case SummaSchemeReadModeString: {
+            switch (c) {
+            case '\\': {
+                /* The escape is translated, not pushed verbatim, so `\n` in
+                 * the source becomes one newline byte in the string. */
+                const char* escape_rest = nullptr;
+                err                     = summa_scheme_read_escape(input + i, &escape_rest, &c);
+                if (err.had) {
+                    goto cleanup;
+                }
+                /* Leave `i` on the escape's last character so the loop's `++i`
+                 * steps to whatever follows it. */
+                i = (size_t)(escape_rest - input) - 1;
+            } break;
+            case '"': {
+                /* Step past the closing quote so `rest` resumes after it
+                 * rather than on it. */
+                i++;
+                goto token_done;
+            } break;
+            default:
+                break;
+            }
+        } break;
+        default: {
+            err = summa_make_error("summa_scheme_read - unhandle read mode");
+            goto cleanup;
+        }
+        }
+        if (c) {
+            summa_string_push(token, c);
+        }
+    skip_string_push:
+    }
+    switch (mode) {
+    case SummaSchemeReadModeMinus:
+    case SummaSchemeReadModePlus: {
+        mode = SummaSchemeReadModeSymbol;
+    } break;
+    case SummaSchemeReadModeString: {
+        err = summa_make_error("summa_scheme_read - string was not closed");
+        goto cleanup;
+    }
+    default:
+        break;
+    }
+token_done:
+    // summa_scheme_read_handle_token_finish:
+    switch (mode) {
+    case SummaSchemeReadModeInteger: {
+        int64_t value = atoll(token->value);
+        *out          = summa_make_scheme_integer(value);
+        goto cleanup;
+    }
+    case SummaSchemeReadModeFloating: {
+        if (token->length == 1) {
+            err = summa_make_error("summa_scheme_read - floating point number cannot be a sole decimal");
+            goto cleanup;
+        }
+        double value = atof(token->value);
+        *out         = summa_make_scheme_floating(value);
+        goto cleanup;
+    }
+    case SummaSchemeReadModeString: {
+        *out = summa_make_scheme_string(token->value);
+        goto cleanup;
+    }
+    case SummaSchemeReadModeSymbol: {
+        if (token->value[0] == '#') { // Special object parsing
+            if (token->length == 2) { // Boolean parsing
+                if (strncmp(token->value, SUMMA_SCHEME_TRUE, 2) == 0) {
+                    *out = summa_make_scheme_boolean(true);
+                    goto cleanup;
+                } else if (strncmp(token->value, SUMMA_SCHEME_FALSE, 2) == 0) {
+                    *out = summa_make_scheme_boolean(false);
+                    goto cleanup;
+                }
+            } else if (token->value[1] == '\\') { // Character parsing
+                if (token->length == 3) {         // Normal character
+                    *out = summa_make_scheme_character(token->value[2]);
+                    goto cleanup;
+                } else if (strcmp(token->value, "#\\space") == 0) {
+                    *out = summa_make_scheme_character(' ');
+                    goto cleanup;
+                } else if (strcmp(token->value, "#\\newline") == 0) {
+                    *out = summa_make_scheme_character('\n');
+                    goto cleanup;
+                } else if (strcmp(token->value, "#\\tab") == 0) {
+                    *out = summa_make_scheme_character('\t');
+                    goto cleanup;
+                } else {
+                    err = summa_make_error("summa_scheme_read - unknown character name");
+                    goto cleanup;
+                }
+            } else {
+                err = summa_make_error("summa_scheme_read - unknown # object");
+                goto cleanup;
+            }
+        }
+        *out = summa_make_scheme_symbol(token->value);
+        goto cleanup;
+    }
+    default: {
+        err = summa_make_error("summa_scheme_read - UNREACHABLE");
+        goto cleanup;
+    }
+    }
+
+cleanup:
+    if (!err.had && rest) {
+        *rest = input + i;
+    }
+    summa_string_free(token);
+    return err;
+}
+
+/* Reads datums up to the closing paren, which is the shared body of a list and
+ * a vector. `input` starts just past the opening bracket. */
+static SummaSchemeError summa_scheme_read_sequence(const char* input, const char** rest, SummaList* out, size_t depth);
+
+/* Reads one datum. `kind` reports what was found, since a `)` and an exhausted
+ * input are both ordinary outcomes one frame down and errors at the top. */
+static SummaSchemeError summa_scheme_read_datum(
+    const char* input, const char** rest, SummaSchemeValue* out, SummaSchemeReadDatumKind* kind, size_t depth) {
+    if (depth > SUMMA_SCHEME_READ_MAX_DEPTH) {
+        return summa_make_error("summa_scheme_read - nesting is too deep");
+    }
+
+    const char* cursor = input + summa_scheme_read_skip_atmosphere(input);
+
+    if (!*cursor) {
+        *kind = SummaSchemeReadDatumEnd;
+        if (rest) {
+            *rest = cursor;
+        }
+        return summa_success();
+    }
+    if (*cursor == ')') {
+        *kind = SummaSchemeReadDatumClose;
+        if (rest) {
+            *rest = cursor + 1;
+        }
+        return summa_success();
+    }
+
+    *kind = SummaSchemeReadDatumValue;
+    switch (*cursor) {
+    case '(': {
+        SummaList        items = nullptr;
+        SummaSchemeError err   = summa_scheme_read_sequence(cursor + 1, &cursor, &items, depth + 1);
+        if (err.had) {
+            return err;
+        }
+        *out = summa_make_scheme_list(items);
+    } break;
+    case '\'': {
+        /* `'x` expands to `(quote x)` here, so the shorthand never reaches the
+         * evaluator as a form of its own. */
+        SummaSchemeValue         quoted      = {};
+        SummaSchemeReadDatumKind quoted_kind = SummaSchemeReadDatumValue;
+        SummaSchemeError         err = summa_scheme_read_datum(cursor + 1, &cursor, &quoted, &quoted_kind, depth + 1);
+        if (err.had) {
+            return err;
+        }
+        if (quoted_kind != SummaSchemeReadDatumValue) {
+            return summa_make_error("summa_scheme_read - quote has nothing to quote");
+        }
+        SummaList form = summa_list_make_empty();
+        summa_list_push(form, &summa_make_scheme_symbol("quote"));
+        summa_list_push(form, &quoted);
+        *out = summa_make_scheme_list(form);
+    } break;
+    default: {
+        /* `#` starts a vector only when a bracket follows; otherwise it is the
+         * first character of `#t`, `#f` or `#\c`. */
+        if (cursor[0] == '#' && cursor[1] == '(') {
+            SummaList        items = nullptr;
+            SummaSchemeError err   = summa_scheme_read_sequence(cursor + 2, &cursor, &items, depth + 1);
+            if (err.had) {
+                return err;
+            }
+            *out = summa_make_scheme_vector(items);
+            break;
+        }
+        SummaSchemeError err = summa_scheme_read_atom(cursor, &cursor, out);
+        if (err.had) {
+            return err;
+        }
+    } break;
+    }
+
+    if (rest) {
+        *rest = cursor + summa_scheme_read_skip_atmosphere(cursor);
+    }
+    return summa_success();
+}
+
+static SummaSchemeError
+summa_scheme_read_sequence(const char* input, const char** rest, SummaList* out, size_t depth) {
+    /* `items` is owned until it is handed over, so the error paths unwind it
+     * along with every datum already pushed into it. */
+    SummaSchemeError err    = summa_success();
+    SummaList        items  = summa_list_make_empty();
+    const char*      cursor = input;
+    for (;;) {
+        SummaSchemeValue         item = {};
+        SummaSchemeReadDatumKind kind = SummaSchemeReadDatumValue;
+
+        err = summa_scheme_read_datum(cursor, &cursor, &item, &kind, depth);
+        if (err.had) {
+            goto cleanup;
+        }
+        if (kind == SummaSchemeReadDatumClose) {
+            break;
+        }
+        if (kind == SummaSchemeReadDatumEnd) {
+            err = summa_make_error("summa_scheme_read - input ended inside a list");
+            goto cleanup;
+        }
+        summa_list_push(items, &item);
+    }
+
+    *out  = items;
+    items = nullptr; /* Handed to the caller; no longer ours to free. */
+    if (rest) {
+        *rest = cursor;
+    }
+cleanup:
+    summa_scheme_list_free_deep(items);
+    return err;
+}
+
 SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment env,
-                                   [[maybe_unused]] const char*                  inputText,
-                                   [[maybe_unused]] SummaSchemeValue*            out) {
-    return summa_make_error("summa_scheme_read - NOT IMPLEMENTED");
+                                   const char*                                   input,
+                                   const char**                                  rest,
+                                   SummaSchemeValue*                             out) {
+    const char*              cursor = nullptr;
+    SummaSchemeValue         value  = {};
+    SummaSchemeReadDatumKind kind   = SummaSchemeReadDatumValue;
+
+    const SummaSchemeError err = summa_scheme_read_datum(input, &cursor, &value, &kind, 0);
+    if (err.had) {
+        return err;
+    }
+    if (kind == SummaSchemeReadDatumEnd) {
+        return summa_make_error("summa_scheme_read - input held no datum");
+    }
+    if (kind == SummaSchemeReadDatumClose) {
+        return summa_make_error("summa_scheme_read - unbalanced close paren");
+    }
+
+    /* Nothing else in the grammar can start with `)`, so one sitting where the
+     * next datum would go is unbalanced no matter what preceded it. Caught
+     * here rather than left for the next call, so `(1))` fails as a whole. */
+    if (*cursor == ')') {
+        summa_scheme_value_free(&value);
+        return summa_make_error("summa_scheme_read - unbalanced close paren");
+    }
+
+    *out = value;
+    if (rest) {
+        *rest = cursor;
+    }
+    return summa_success();
 }
 
 bool summa_scheme_truthy(const SummaSchemeValue* value) {
     return !(value->type == SummaSchemeBooleanType && !value->value.boolean.value);
+}
+
+/* Renders a value short enough to sit inside an error message. Atoms print
+ * themselves; the containers name their type rather than dumping their
+ * contents, since the operator is what the reader needs to see. */
+static void summa_scheme_describe(const SummaSchemeValue* value, char* buffer, size_t size) {
+    switch (value->type) {
+    case SummaSchemeBooleanType: {
+        snprintf(buffer, size, "%s", value->value.boolean.value ? SUMMA_SCHEME_TRUE : SUMMA_SCHEME_FALSE);
+    } break;
+    case SummaSchemeCharacterType: {
+        snprintf(buffer, size, "#\\%c", value->value.character.value);
+    } break;
+    case SummaSchemeFloatingType: {
+        snprintf(buffer, size, "%f", value->value.floating.value);
+    } break;
+    case SummaSchemeIntegerType: {
+        snprintf(buffer, size, "%" PRId64, value->value.integer.value);
+    } break;
+    case SummaSchemeListType: {
+        snprintf(buffer, size, "a list");
+    } break;
+    case SummaSchemeProcedureType: {
+        snprintf(buffer, size, "#<procedure %s>", value->value.procedure.name->value);
+    } break;
+    case SummaSchemeStringType: {
+        snprintf(buffer, size, "\"%s\"", value->value.string.value->value);
+    } break;
+    case SummaSchemeSymbolType: {
+        snprintf(buffer, size, "%s", value->value.symbol.value->value);
+    } break;
+    case SummaSchemeVectorType: {
+        snprintf(buffer, size, "a vector");
+    } break;
+    }
+}
+
+#define SUMMA_SCHEME_DESCRIPTION_LENGTH 128
+
+static SummaSchemeError summa_scheme_wrong_type_to_apply(const SummaSchemeValue* operator_value) {
+    char described[SUMMA_SCHEME_DESCRIPTION_LENGTH];
+    summa_scheme_describe(operator_value, described, sizeof(described));
+    snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "Wrong type to apply: %s", described);
+    return summa_make_error(ERROR_MESSAGE);
 }
 
 static size_t SUMMA_SCHEME_DEPTH = 0;
@@ -333,41 +917,51 @@ static SummaSchemeError summa_scheme_evaluate_inner([[maybe_unused]] const Summa
         *out = summa_make_scheme_integer(in.value.integer.value);
     } break;
     case SummaSchemeListType: {
+        /* A list in evaluated position is a combination, never data. `(1 2 3)`
+         * is an error, and the way to get the list itself is to quote it. */
         SummaList form = in.value.list.value;
-        if (form && form->length > 0) {
-            if (form->value[0].type == SummaSchemeSymbolType) {
-                /* Ahead of the binding lookup, deliberately. `if` routed
-                 * through the application path would evaluate both branches
-                 * and turn every recursive base case into a loop. */
-                const SummaSchemeSpecialFormFn special =
-                    summa_scheme_special_form_lookup(form->value[0].value.symbol.value->value);
-                if (special) {
-                    return special(env, form, out);
-                }
-
-                SummaSchemeBinding head;
-                SummaSchemeError   lookup = summa_scheme_environment_get(env, form->value[0].value.symbol, &head);
-                if (!lookup.had && head.value.type == SummaSchemeProcedureType) {
-                    return summa_scheme_apply(env, head.value.value.procedure, form, out);
-                }
-            } else if (form->value[0].type == SummaSchemeListType) {
-                /* `((lambda (x) x) 1)` -- the operator is an expression.
-                 * Anything that is not a procedure stays data. */
-                SummaSchemeValue       operator_value;
-                const SummaSchemeError err = summa_scheme_evaluate(env, form->value[0], &operator_value);
-                if (err.had) {
-                    return err;
-                }
-                if (operator_value.type == SummaSchemeProcedureType) {
-                    const SummaSchemeError applied =
-                        summa_scheme_apply(env, operator_value.value.procedure, form, out);
-                    summa_scheme_value_free(&operator_value);
-                    return applied;
-                }
-                summa_scheme_value_free(&operator_value);
-            }
+        if (!form || form->length == 0) {
+            return summa_make_error("Illegal empty combination: ()");
         }
-        return summa_scheme_value_copy(out, &in);
+
+        if (form->value[0].type == SummaSchemeSymbolType) {
+            /* Ahead of the binding lookup, deliberately. `if` routed through
+             * the application path would evaluate both branches and turn every
+             * recursive base case into a loop. */
+            const SummaSchemeSpecialFormFn special =
+                summa_scheme_special_form_lookup(form->value[0].value.symbol.value->value);
+            if (special) {
+                return special(env, form, out);
+            }
+
+            /* Resolved through the binding rather than by evaluating the
+             * symbol, which would deep-copy the procedure on every call. */
+            SummaSchemeBinding     head;
+            const SummaSchemeError lookup = summa_scheme_environment_get(env, form->value[0].value.symbol, &head);
+            if (lookup.had) {
+                return lookup;
+            }
+            if (head.value.type != SummaSchemeProcedureType) {
+                return summa_scheme_wrong_type_to_apply(&head.value);
+            }
+            return summa_scheme_apply(env, head.value.value.procedure, form, out);
+        }
+
+        /* Any other operator is an expression: `((lambda (x) x) 1)`, and also
+         * `(1 2 3)`, where the 1 evaluates to itself and then fails to apply. */
+        SummaSchemeValue operator_value;
+        SummaSchemeError err = summa_scheme_evaluate(env, form->value[0], &operator_value);
+        if (err.had) {
+            return err;
+        }
+        if (operator_value.type != SummaSchemeProcedureType) {
+            err = summa_scheme_wrong_type_to_apply(&operator_value);
+            summa_scheme_value_free(&operator_value);
+            return err;
+        }
+        err = summa_scheme_apply(env, operator_value.value.procedure, form, out);
+        summa_scheme_value_free(&operator_value);
+        return err;
     } break;
     case SummaSchemeProcedureType: {
         return summa_scheme_value_copy(out, &in);
@@ -376,26 +970,19 @@ static SummaSchemeError summa_scheme_evaluate_inner([[maybe_unused]] const Summa
         *out = summa_make_scheme_string(in.value.string.value->value);
     } break;
     case SummaSchemeSymbolType: {
-        SummaSchemeBinding binding;
-        SummaSchemeError   err = summa_scheme_environment_get(env, in.value.symbol, &binding);
+        /* A symbol in evaluated position is a variable reference, so an unbound
+         * one is an error rather than a value. Quoting is what yields the
+         * symbol itself. */
+        SummaSchemeBinding     binding;
+        const SummaSchemeError err = summa_scheme_environment_get(env, in.value.symbol, &binding);
         if (err.had) {
-            /* Unbound, so the symbol evaluates to itself and is interned into
-             * the environment on the way out.
-             *
-             * The name, the symbol bound to it, and the one returned are three
-             * separate strings on purpose -- the same reason the global `+`
-             * binding builds two. The environment frees a binding's value and
-             * its name independently, and the caller frees what it gets back,
-             * so any handle shared between those would be released twice. */
-            const char* name = in.value.symbol.value->value;
-            summa_scheme_environment_set(
-                env, summa_scheme_binding_make(summa_string_make(name), summa_make_scheme_symbol(name)));
+            return err;
         }
-        /* Either branch hands back a copy the caller owns: the binding's value
-         * stays the environment's. */
-        return summa_scheme_value_copy(out, err.had ? &in : &binding.value);
+        /* A copy the caller owns; the binding's value stays the environment's. */
+        return summa_scheme_value_copy(out, &binding.value);
     } break;
     case SummaSchemeVectorType: {
+        /* Self-evaluating, unlike a list. */
         return summa_scheme_value_copy(out, &in);
     } break;
     default: {

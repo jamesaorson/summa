@@ -11,7 +11,10 @@ typedef struct {
     const char* suite;
     int         tests_passed;
     int         tests_failed;
+    int         tests_todo;
     int         _assert_failed;
+    int         _todo;
+    const char* _todo_reason;
     const char* _filter;
     int         _list_mode;
 } summa_test_ctx_t;
@@ -48,7 +51,30 @@ void summa_test_assert_fail(const summa_test_failure_t* f);
         }                                                                 \
     } while (0)
 
-#define SUMMA_TEST_TODO(msg) SUMMA_TEST_ASSERT_MSG(false, "TODO: " msg)
+/* Marks the running case as known-failing for `reason`. The case still runs
+ * and its assertions still report, but a failure counts as TODO rather than as
+ * a broken test, and the suite still exits zero -- which is what lets a
+ * specification written ahead of the implementation live in the tree without
+ * holding CI red.
+ *
+ * A case that is marked TODO and then *passes* is reported as a failure: the
+ * gap it was standing in for has closed, and the marker should come off. That
+ * is the whole point of marking rather than deleting -- the suite tells you
+ * when the work landed.
+ *
+ * Call it first thing in the case, so the reason is set before any assertion
+ * can fire:
+ *
+ *     void test_thing_that_does_not_work_yet() {
+ *         SUMMA_TEST_TODO("needs the `-` builtin");
+ *         SUMMA_TEST_ASSERT_EQ(42, answer());
+ *     }
+ */
+#define SUMMA_TEST_TODO(reason)                 \
+    do {                                        \
+        summa_test_ctx._todo        = 1;        \
+        summa_test_ctx._todo_reason = (reason); \
+    } while (0)
 
 #define SUMMA_TEST_ASSERT_EQ(a, b) SUMMA_TEST_ASSERT((a) == (b))
 #define SUMMA_TEST_ASSERT_NEQ(a, b) SUMMA_TEST_ASSERT((a) != (b))
@@ -170,23 +196,31 @@ typedef SUMMA_TEST_THREAD_RESULT (*summa_test_thread_fn)(void*);
 void summa_test_thread_start(summa_test_thread_t* thread, summa_test_thread_fn fn, void* arg);
 void summa_test_thread_join(summa_test_thread_t* thread);
 
-#define SUMMA_TEST_RUN(fn)                                                      \
-    do {                                                                        \
-        if (summa_test_ctx._list_mode) {                                        \
-            printf("%s\n", #fn);                                                \
-            break;                                                              \
-        }                                                                       \
-        if (summa_test_ctx._filter && strcmp(summa_test_ctx._filter, #fn) != 0) \
-            break;                                                              \
-        summa_test_ctx._assert_failed = 0;                                      \
-        (fn)();                                                                 \
-        if (summa_test_ctx._assert_failed) {                                    \
-            summa_test_ctx.tests_failed++;                                      \
-            printf("  FAIL  %s\n", #fn);                                        \
-        } else {                                                                \
-            summa_test_ctx.tests_passed++;                                      \
-            printf("  ok    %s\n", #fn);                                        \
-        }                                                                       \
+#define SUMMA_TEST_RUN(fn)                                                           \
+    do {                                                                             \
+        if (summa_test_ctx._list_mode) {                                             \
+            printf("%s\n", #fn);                                                     \
+            break;                                                                   \
+        }                                                                            \
+        if (summa_test_ctx._filter && strcmp(summa_test_ctx._filter, #fn) != 0)      \
+            break;                                                                   \
+        summa_test_ctx._assert_failed = 0;                                           \
+        summa_test_ctx._todo          = 0;                                           \
+        summa_test_ctx._todo_reason   = nullptr;                                     \
+        (fn)();                                                                      \
+        if (summa_test_ctx._todo && summa_test_ctx._assert_failed) {                 \
+            summa_test_ctx.tests_todo++;                                             \
+            printf("  TODO  %s (%s)\n", #fn, summa_test_ctx._todo_reason);           \
+        } else if (summa_test_ctx._todo) {                                           \
+            summa_test_ctx.tests_failed++;                                           \
+            printf("  FAIL  %s (passed while marked TODO -- drop the mark)\n", #fn); \
+        } else if (summa_test_ctx._assert_failed) {                                  \
+            summa_test_ctx.tests_failed++;                                           \
+            printf("  FAIL  %s\n", #fn);                                             \
+        } else {                                                                     \
+            summa_test_ctx.tests_passed++;                                           \
+            printf("  ok    %s\n", #fn);                                             \
+        }                                                                            \
     } while (0)
 
 #endif /* SUMMA_TEST_H */
@@ -214,7 +248,10 @@ void summa_test_begin(const char* suite_name, int argc, char** argv) {
         .suite          = suite_name,
         .tests_passed   = 0,
         .tests_failed   = 0,
+        .tests_todo     = 0,
         ._assert_failed = 0,
+        ._todo          = 0,
+        ._todo_reason   = nullptr,
         ._filter        = nullptr,
         ._list_mode     = 0,
     };
@@ -231,23 +268,30 @@ void summa_test_begin(const char* suite_name, int argc, char** argv) {
 int summa_test_end(void) {
     if (summa_test_ctx._list_mode)
         return 0;
-    int total = summa_test_ctx.tests_passed + summa_test_ctx.tests_failed;
+    int total = summa_test_ctx.tests_passed + summa_test_ctx.tests_failed + summa_test_ctx.tests_todo;
     printf("--- %d / %d passed", summa_test_ctx.tests_passed, total);
     if (summa_test_ctx.tests_failed > 0)
         printf("  (%d FAILED)", summa_test_ctx.tests_failed);
+    if (summa_test_ctx.tests_todo > 0)
+        printf("  (%d TODO)", summa_test_ctx.tests_todo);
     printf(" ---\n");
     return summa_test_ctx.tests_failed > 0 ? 1 : 0;
 }
 
 /* GCC-style "file:line: error: message" — recognized as-is by editors and
  * tools that link file:line references (including the default errorPattern
- * in VS Code's "CMake Test Explorer" extension). */
+ * in VS Code's "CMake Test Explorer" extension).
+ *
+ * A case marked SUMMA_TEST_TODO reports "note:" instead, since its failure is
+ * the expected state rather than a defect; tooling that highlights errors then
+ * leaves the known gaps alone while still linking to them. */
 void summa_test_assert_fail(const summa_test_failure_t* f) {
     summa_test_ctx._assert_failed = 1;
+    const char* severity          = summa_test_ctx._todo ? "note" : "error";
     if (f->message)
-        printf("%s:%d: error: %s (%s)\n", f->file, f->line, f->expr, f->message);
+        printf("%s:%d: %s: %s (%s)\n", f->file, f->line, severity, f->expr, f->message);
     else
-        printf("%s:%d: error: %s\n", f->file, f->line, f->expr);
+        printf("%s:%d: %s: %s\n", f->file, f->line, severity, f->expr);
 }
 
 summa_test_file_t summa_test_file_open(void) {
