@@ -16,9 +16,9 @@
  * is written as one flat recursion, which needs no struct because the factor
  * that last divided `n` is simply the largest so far.
  *
- * Iterations: ~775,000, up to sqrt(600851475143). Needs tail calls. */
+ * Iterations: ~775,000, up to sqrt(600851475143), all of them tail calls.
+ * Runs in well under a second. */
 void test_scheme_euler_003_largest_prime_factor() {
-    SUMMA_TEST_TODO("needs tail calls for ~775k iterations");
     assert_euler_answer(EULER_PRELUDE "(define (lpf n factor largest)"
                                       "  (cond ((> (* factor factor) n) (if (> n 1) n largest))"
                                       "        ((= 0 (modulo n factor)) (lpf (quotient n factor) factor factor))"

@@ -12,9 +12,9 @@
 /* Problem 7 -- the 10001st prime.
  *
  * Iterations: millions, counting odd candidates and trial-dividing each.
- * Needs tail calls. */
+ * Under ten seconds in a Debug build -- slow, but it finishes, so there is
+ * nothing here to mark. */
 void test_scheme_euler_007_ten_thousand_and_first_prime() {
-    SUMMA_TEST_TODO("needs tail calls for millions of iterations");
     assert_euler_answer(EULER_PRELUDE "(define (find-prime index current-index current-prime num)"
                                       "  (cond ((>= current-index index) current-prime)"
                                       "        ((prime? num) (find-prime index (+ current-index 1) num (+ num 2)))"
