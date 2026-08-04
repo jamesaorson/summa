@@ -9,6 +9,8 @@
 #include <string.h>
 #define SUMMA_ARRAY_IMPLEMENTATION
 #include <summa/array/array.h>
+#define SUMMA_REF_COUNT_IMPLEMENTATION
+#include <summa/ref_count/ref_count.h>
 #define SUMMA_STRING_IMPLEMENTATION
 #include <summa/string/string.h>
 
@@ -102,9 +104,11 @@ SUMMA_ARRAY_GENERATE_TYPE(SummaSchemeSymbolList, symbol_list, SummaSchemeSymbol)
 
 /* A null `body` marks a builtin; dispatch sends it to the procedure table.
  *
- * `closure` is the defining environment, borrowed like
- * SummaSchemeEnvironment_t::parent. A closure that escapes the frame it
- * captured therefore dangles -- see BUILTINS.md. */
+ * `closure` is the defining environment, retained like
+ * SummaSchemeEnvironment_t::parent: a procedure holds the frame it was defined
+ * in up for as long as the procedure itself lives, which is what lets a closure
+ * outlive the call that made it. summa_scheme_value_copy acquires it and
+ * summa_scheme_value_free releases it -- see BUILTINS.md. */
 typedef struct {
     SummaString            name;
     SummaSchemeSymbolList  bindings;
@@ -182,24 +186,70 @@ typedef struct {
 
 SUMMA_ARRAY_GENERATE_TYPE(SummaSchemeBindingList, binding_list, SummaSchemeBinding)
 
+/* The trailing four fields are the cycle collector's, not the evaluator's: the
+ * registry links every live environment into one intrusive list, and the two
+ * scratch fields are written and read within a single collection pass. See
+ * "Cycle collection" in the implementation section. */
 struct SummaSchemeEnvironment_t {
     SummaSchemeBindingList bindings;
     SummaSchemeEnvironment parent;
+
+    SummaSchemeEnvironment registry_previous;
+    SummaSchemeEnvironment registry_next;
+    size_t                 trial_count;
+    bool                   reachable;
 };
 
-/* Environments are heap-allocated and returned by value-shaped constructors, so
- * they can outlive the block that built them -- which is what a procedure
- * capturing its defining environment will require.
+/* Environments are heap-allocated and reference counted, so they outlive the
+ * block that built them exactly as long as something still points at them --
+ * which is what lets a procedure capture its defining environment.
  *
- * `parent` is borrowed, never owned: freeing a child leaves its parent alone,
- * and a parent must outlive every child pointing at it. That constraint is what
- * gets lifted when environments become reference counted. */
+ * The count lives in a `RefCount` header carved out of the same allocation, so
+ * the handle a caller holds is the payload and `env - 1` is its counter. `make`
+ * hands back the only reference, at a count of one.
+ *
+ * `parent` is retained, not borrowed: a child holds its parent up, so freeing a
+ * parent while a child still points at it is safe rather than a dangling
+ * chain. */
 SummaSchemeEnvironment summa_scheme_environment_make(SummaSchemeEnvironment parent);
 SummaSchemeEnvironment summa_scheme_environment_make_global(void);
 
-/* Frees the environment, its binding list, and every name and value bound in
- * it -- but not its parent. */
-void summa_scheme_environment_free(SummaSchemeEnvironment env);
+/* One more reference, and one fewer. `acquire` returns its argument so a slot
+ * can be filled and retained in one expression; both take null and do nothing
+ * with it.
+ *
+ * The last release runs the environment's teardown: its parent and every
+ * environment its bindings reach are released in turn, then the binding list
+ * and every name and value in it are freed. */
+SummaSchemeEnvironment summa_scheme_environment_acquire(const SummaSchemeEnvironment env);
+void                   summa_scheme_environment_release(const SummaSchemeEnvironment env);
+
+/* Drops a reference the way `release` does, and then collects cycles.
+ *
+ * This is the caller-facing end of an environment's life -- the call that
+ * matches `make_global` at the end of a program -- rather than the one the
+ * evaluator uses per frame. A program's last act leaves nothing behind even if
+ * it never made enough environments to reach the automatic threshold, which is
+ * what makes `live_count` an honest reading once a run is over. */
+void summa_scheme_environment_free(const SummaSchemeEnvironment env);
+
+/* Environments made but not yet freed -- the length of the registry the
+ * collector walks. An evaluation that has run to completion and had its global
+ * environment torn down leaves this back at whatever it was beforehand;
+ * anything else is an environment nobody can reach and nobody will free.
+ *
+ * That is not a hypothetical now that environments are reference counted: a
+ * procedure captures the environment it was defined in, so a `letrec` or an
+ * internal `define` binding a procedure into the very frame it closes over
+ * makes a cycle, and a cycle's count never reaches zero. This is the instrument
+ * those leaks are visible through. Single-threaded, like SUMMA_SCHEME_DEPTH. */
+size_t summa_scheme_environment_live_count(void);
+
+/* Runs a trial-deletion pass over every live environment and returns how many
+ * it reclaimed. Collection is automatic -- see SUMMA_SCHEME_GC_MIN_THRESHOLD --
+ * so this is for a host that wants a pass at a moment of its own choosing, and
+ * for tests that want to observe one. */
+size_t summa_scheme_collect_cycles(void);
 
 void summa_scheme_environment_init_global(SummaSchemeEnvironment env);
 
@@ -1189,8 +1239,11 @@ SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSche
         dest->value.procedure.name     = summa_string_make(src->value.procedure.name->value);
         dest->value.procedure.bindings = nullptr;
         dest->value.procedure.body     = nullptr;
-        /* Borrowed: not the procedure's to duplicate or release. */
-        dest->value.procedure.closure = src->value.procedure.closure;
+        /* Retained: the copy is another thing pointing at that environment, and
+         * the count is what keeps the environment there for it. Released again
+         * by summa_scheme_value_free -- the two are the counted edge set, and
+         * summa_scheme_environment_for_each_edge has to enumerate exactly it. */
+        dest->value.procedure.closure = summa_scheme_environment_acquire(src->value.procedure.closure);
         if (src->value.procedure.bindings) {
             dest->value.procedure.bindings = summa_scheme_symbol_list_copy_deep(src->value.procedure.bindings);
         }
@@ -1241,9 +1294,12 @@ void summa_scheme_value_free(SummaSchemeValue* value) {
     } break;
     case SummaSchemeProcedureType: {
         /* A procedure can carry no bindings or no body, so each handle is
-         * checked before release. `closure` is borrowed and deliberately
-         * absent -- freeing a procedure must not disturb the environment it
-         * was defined in. */
+         * checked before release. `closure` is one of them: the procedure held
+         * a reference from the moment it was made or copied, and this gives it
+         * back. An environment tearing itself down has already nulled the slot
+         * through summa_scheme_environment_for_each_edge, so that path releases
+         * it once rather than twice. */
+        SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.closure, summa_scheme_environment_release);
         SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.name, summa_string_free);
         SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.bindings, summa_scheme_symbol_list_free_deep);
         SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.body, summa_scheme_list_free_deep);
@@ -1326,11 +1382,220 @@ bool summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeVa
     }
 }
 
+#pragma region Environment lifetime
+
+SUMMA_ARRAY_GENERATE_TYPE(SummaSchemeEnvironmentList, environment_list, SummaSchemeEnvironment)
+
+/* ── The counted edge set ──────────────────────────────────────────────────
+ *
+ * An environment's outgoing references to other environments are its `parent`
+ * and the `closure` of every procedure its bindings can reach -- including
+ * procedures nested inside a bound list or vector, and inside another
+ * procedure's body, because summa_scheme_value_copy acquires those too.
+ *
+ * Exactly one function walks that set, and both sides of the design call it.
+ * Teardown releases what it enumerates; the collector subtracts, marks and
+ * breaks what it enumerates. That is deliberate. Trial deletion's one failure
+ * mode is edge-set drift -- a reference the destructor releases but the
+ * collector does not walk (or the reverse) makes the collector's arithmetic
+ * wrong, and wrong arithmetic frees live data whose corruption then surfaces
+ * somewhere else entirely. Two traversals that must agree will eventually stop
+ * agreeing; one traversal cannot disagree with itself.
+ *
+ * The visitor receives the *slot*, not the value, so a visitor that releases
+ * can null the slot in the same step. That is what keeps teardown from
+ * double-releasing: once a closure slot is null, the ordinary
+ * summa_scheme_value_free that follows has nothing left to give back.
+ *
+ * The invariant, stated once: a reference this enumerates is a reference
+ * summa_scheme_value_copy acquired and summa_scheme_value_free would release.
+ * Adding a value type that can carry an environment means adding it here in the
+ * same commit. */
+typedef void (*SummaSchemeEnvironmentEdgeFn)(SummaSchemeEnvironment* slot, void* context);
+
+static void
+summa_scheme_list_for_each_environment_edge(SummaList list, SummaSchemeEnvironmentEdgeFn visit, void* context);
+
+static void summa_scheme_value_for_each_environment_edge(SummaSchemeValue*            value,
+                                                         SummaSchemeEnvironmentEdgeFn visit,
+                                                         void*                        context) {
+    switch (value->type) {
+    case SummaSchemeProcedureType: {
+        visit(&value->value.procedure.closure, context);
+        /* The body is deep-copied like any other list, so a procedure value
+         * sitting in it carries a counted closure of its own. */
+        summa_scheme_list_for_each_environment_edge(value->value.procedure.body, visit, context);
+    } break;
+    case SummaSchemeListType: {
+        summa_scheme_list_for_each_environment_edge(value->value.list.value, visit, context);
+    } break;
+    case SummaSchemeVectorType: {
+        summa_scheme_list_for_each_environment_edge(value->value.vector.value, visit, context);
+    } break;
+    case SummaSchemeBooleanType:
+    case SummaSchemeCharacterType:
+    case SummaSchemeFloatingType:
+    case SummaSchemeIntegerType:
+    case SummaSchemeStringType:
+    case SummaSchemeSymbolType: {
+        /* Nothing that can point at an environment. */
+    } break;
+    }
+}
+
+static void
+summa_scheme_list_for_each_environment_edge(SummaList list, SummaSchemeEnvironmentEdgeFn visit, void* context) {
+    for (size_t i = 0; list && i < list->length; i++) {
+        summa_scheme_value_for_each_environment_edge(&list->value[i], visit, context);
+    }
+}
+
+static void summa_scheme_environment_for_each_edge(const SummaSchemeEnvironment env,
+                                                   SummaSchemeEnvironmentEdgeFn visit,
+                                                   void*                        context) {
+    visit(&env->parent, context);
+    for (size_t i = 0; env->bindings && i < env->bindings->length; i++) {
+        summa_scheme_value_for_each_environment_edge(&env->bindings->value[i].value, visit, context);
+    }
+}
+
+/* ── The registry ──────────────────────────────────────────────────────────
+ *
+ * Every live environment, in one intrusive doubly linked list. Trial deletion
+ * has no roots to start from, so it starts from all of them; the list is what
+ * "all of them" means, and its length is what live_count reports. Intrusive so
+ * that linking and unlinking are O(1) on a path -- environment_make and the
+ * destructor -- that runs once per call frame.
+ *
+ * Single-threaded, like SUMMA_SCHEME_DEPTH. */
+static SummaSchemeEnvironment SUMMA_SCHEME_ENVIRONMENT_REGISTRY = nullptr;
+static size_t                 SUMMA_SCHEME_LIVE_ENVIRONMENTS    = 0;
+
+/* ── When collection runs ──────────────────────────────────────────────────
+ *
+ * A collector nobody triggers is not a collector, so there are three ways in
+ * and the automatic one carries the load:
+ *
+ *  - summa_scheme_environment_make runs a pass once the registry reaches
+ *    SUMMA_SCHEME_GC_THRESHOLD entries. Allocation is the only moment the
+ *    garbage can grow, so it is the only moment worth checking, and doing it
+ *    before the new environment exists keeps a half-built one out of the pass.
+ *  - summa_scheme_environment_free runs one unconditionally. A program that
+ *    never made 64 environments would otherwise end with its cycles still
+ *    counted, and live_count would read as a leak for the rest of the process.
+ *  - summa_scheme_collect_cycles is public for a host that wants a pass at a
+ *    moment of its own choosing.
+ *
+ * Every pass retunes the threshold to twice what survived it, never below the
+ * floor. A pass costs time proportional to the registry, so scaling the gap to
+ * the live set keeps the amortized cost per environment constant and bounds the
+ * garbage in flight to a constant factor of what is genuinely alive. Retuning
+ * on every pass rather than only on the automatic ones is what lets the
+ * threshold come back *down*: a program that briefly held thousands of frames
+ * must not leave the next one collecting only once in thousands. The floor
+ * stops a program with a handful of environments from collecting on every
+ * frame. */
+#define SUMMA_SCHEME_GC_MIN_THRESHOLD 64
+static size_t SUMMA_SCHEME_GC_THRESHOLD = SUMMA_SCHEME_GC_MIN_THRESHOLD;
+static bool   SUMMA_SCHEME_GC_RUNNING   = false;
+
+size_t summa_scheme_environment_live_count(void) {
+    return SUMMA_SCHEME_LIVE_ENVIRONMENTS;
+}
+
+/* The counter sits one header ahead of the handle: ref_count carves the payload
+ * out of the same allocation, so `ref_count_as(rc, SummaSchemeEnvironment)` is
+ * `rc + 1` and this is the way back. */
+static RefCount summa_scheme_environment_ref(const SummaSchemeEnvironment env) {
+    return (RefCount)(void*)env - 1;
+}
+
+SummaSchemeEnvironment summa_scheme_environment_acquire(const SummaSchemeEnvironment env) {
+    if (env) {
+        ref_count_acquire(summa_scheme_environment_ref(env));
+    }
+    return env;
+}
+
+void summa_scheme_environment_release(const SummaSchemeEnvironment env) {
+    if (env) {
+        ref_count_release(summa_scheme_environment_ref(env));
+    }
+}
+
+/* Give back one edge and null the slot, so whatever frees the value afterwards
+ * sees nothing left to release. Used by teardown and by the collector's
+ * breaking step -- the same operation in both, which is the point. */
+static void summa_scheme_environment_edge_release(SummaSchemeEnvironment* slot, [[maybe_unused]] void* context) {
+    if (*slot) {
+        const SummaSchemeEnvironment target = *slot;
+        *slot                               = nullptr;
+        summa_scheme_environment_release(target);
+    }
+}
+
+/* ref_count runs this on the release that reaches zero, on the payload rather
+ * than the header. Reentrant by design: releasing the parent, or a binding
+ * holding the last reference to some other environment, lands back here for
+ * that one. The recursion is the program's own environment chain, which the
+ * evaluator's depth guard already bounds. */
+static void summa_scheme_environment_destroy(void* payload) {
+    const SummaSchemeEnvironment env = payload;
+
+    if (env->registry_previous) {
+        env->registry_previous->registry_next = env->registry_next;
+    } else {
+        SUMMA_SCHEME_ENVIRONMENT_REGISTRY = env->registry_next;
+    }
+    if (env->registry_next) {
+        env->registry_next->registry_previous = env->registry_previous;
+    }
+    env->registry_previous = nullptr;
+    env->registry_next     = nullptr;
+    SUMMA_SCHEME_LIVE_ENVIRONMENTS--;
+
+    /* Every outgoing reference, through the one enumeration the collector also
+     * uses -- released and nulled before anything below can free the value it
+     * was reached through. */
+    summa_scheme_environment_for_each_edge(env, summa_scheme_environment_edge_release, nullptr);
+
+    for (size_t i = 0; i < env->bindings->length; i++) {
+        SummaSchemeBinding* binding = &env->bindings->value[i];
+        summa_scheme_value_free(&binding->value);
+        summa_string_free(binding->name);
+    }
+    summa_binding_list_free(env->bindings);
+    env->bindings = nullptr;
+    /* The block itself is ref_count's to free, immediately after this returns. */
+}
+
+static void summa_scheme_environment_collect_if_due(void);
+
 SummaSchemeEnvironment summa_scheme_environment_make(SummaSchemeEnvironment parent) {
-    SummaSchemeEnvironment env = malloc(sizeof(struct SummaSchemeEnvironment_t));
-    assert(env);
-    env->bindings = summa_binding_list_make_empty();
-    env->parent   = parent;
+    /* Ahead of the allocation rather than after it, so the new environment is
+     * never a half-built candidate. Everything a caller is holding at this
+     * point is holding a count, which is what makes it a root the pass cannot
+     * take away. */
+    summa_scheme_environment_collect_if_due();
+
+    const RefCount ref =
+        ref_count_make_with_destructor(struct SummaSchemeEnvironment_t, summa_scheme_environment_destroy);
+    assert(ref);
+    const SummaSchemeEnvironment env = ref_count_as(ref, SummaSchemeEnvironment);
+
+    env->bindings    = summa_binding_list_make_empty();
+    env->parent      = summa_scheme_environment_acquire(parent);
+    env->trial_count = 0;
+    env->reachable   = false;
+
+    env->registry_previous = nullptr;
+    env->registry_next     = SUMMA_SCHEME_ENVIRONMENT_REGISTRY;
+    if (env->registry_next) {
+        env->registry_next->registry_previous = env;
+    }
+    SUMMA_SCHEME_ENVIRONMENT_REGISTRY = env;
+    SUMMA_SCHEME_LIVE_ENVIRONMENTS++;
+
     return env;
 }
 
@@ -1340,19 +1605,119 @@ SummaSchemeEnvironment summa_scheme_environment_make_global(void) {
     return env;
 }
 
-void summa_scheme_environment_free(SummaSchemeEnvironment env) {
-    if (!env) {
-        return;
-    }
-    for (size_t i = 0; i < env->bindings->length; i++) {
-        SummaSchemeBinding* binding = &env->bindings->value[i];
-        summa_scheme_value_free(&binding->value);
-        summa_string_free(binding->name);
-    }
-    summa_binding_list_free(env->bindings);
-    /* parent is borrowed, not owned. */
-    free(env);
+void summa_scheme_environment_free(const SummaSchemeEnvironment env) {
+    summa_scheme_environment_release(env);
+    summa_scheme_collect_cycles();
 }
+
+/* ── Trial deletion ────────────────────────────────────────────────────────
+ *
+ * Counting reclaims everything except a cycle, and closures make cycles the
+ * moment a procedure is bound into the frame it closes over -- `letrec`, an
+ * internal `define`, a top-level recursive `define`. This is what reclaims
+ * those.
+ *
+ * Mark-and-sweep is not an option here: it needs root enumeration, and the
+ * roots are `SummaSchemeEnvironment` values held in C locals across
+ * summa_scheme_evaluate_inner, summa_scheme_let, summa_scheme_procedure_dispatch
+ * and summa_scheme_evaluate_sequence, where no collector can see them. Trial
+ * deletion needs no roots. It works from the counts:
+ *
+ *   1. give every live environment a trial count equal to its real one;
+ *   2. subtract one for every reference held by another live environment;
+ *   3. whatever still has a trial count left is held from outside the registry
+ *      -- a C local, or a value in flight -- so it is a root. Mark it, and
+ *      everything reachable from it, as live;
+ *   4. the unmarked remainder was alive only because it pointed at itself.
+ *
+ * Step 3 is not optional. A call frame reached only from a root's parent chain
+ * has every one of its references subtracted in step 2, and would be collected
+ * out from under the evaluator without the marking pass to put it back.
+ *
+ * Collecting is CPython's clearing step: hold a reference on each condemned
+ * environment, break every edge out of the condemned set, then let go. Holding
+ * first is what makes the breaking safe in any order. An environment outside
+ * the condemned set can lose references here but cannot reach zero -- if the
+ * condemned held its last reference, it would not have been marked. */
+
+static void summa_scheme_environment_edge_subtract(SummaSchemeEnvironment* slot, [[maybe_unused]] void* context) {
+    if (*slot) {
+        /* An edge with no count behind it is edge-set drift -- the enumeration
+         * and the counting have stopped agreeing, and the arithmetic below is
+         * no longer sound. */
+        assert((*slot)->trial_count > 0);
+        (*slot)->trial_count--;
+    }
+}
+
+static void summa_scheme_environment_edge_mark(SummaSchemeEnvironment* slot, void* context) {
+    const SummaSchemeEnvironmentList worklist = context;
+    if (*slot && !(*slot)->reachable) {
+        (*slot)->reachable = true;
+        summa_environment_list_push(worklist, slot);
+    }
+}
+
+size_t summa_scheme_collect_cycles(void) {
+    /* A destructor reached from the breaking step must not start a second pass
+     * over a registry the first one is in the middle of. */
+    if (SUMMA_SCHEME_GC_RUNNING) {
+        return 0;
+    }
+    SUMMA_SCHEME_GC_RUNNING = true;
+
+    for (SummaSchemeEnvironment env = SUMMA_SCHEME_ENVIRONMENT_REGISTRY; env; env = env->registry_next) {
+        env->trial_count = summa_scheme_environment_ref(env)->count;
+        env->reachable   = false;
+    }
+    for (SummaSchemeEnvironment env = SUMMA_SCHEME_ENVIRONMENT_REGISTRY; env; env = env->registry_next) {
+        summa_scheme_environment_for_each_edge(env, summa_scheme_environment_edge_subtract, nullptr);
+    }
+
+    /* Iterated by index rather than popped, so pushes made while marking are
+     * picked up and `value` is re-read after a growth reallocates it. */
+    const SummaSchemeEnvironmentList worklist = summa_environment_list_make_empty();
+    for (SummaSchemeEnvironment env = SUMMA_SCHEME_ENVIRONMENT_REGISTRY; env; env = env->registry_next) {
+        if (env->trial_count > 0 && !env->reachable) {
+            env->reachable = true;
+            summa_environment_list_push(worklist, &env);
+        }
+    }
+    for (size_t i = 0; i < worklist->length; i++) {
+        summa_scheme_environment_for_each_edge(worklist->value[i], summa_scheme_environment_edge_mark, worklist);
+    }
+    summa_environment_list_free(worklist);
+
+    const SummaSchemeEnvironmentList condemned = summa_environment_list_make_empty();
+    for (SummaSchemeEnvironment env = SUMMA_SCHEME_ENVIRONMENT_REGISTRY; env; env = env->registry_next) {
+        if (!env->reachable) {
+            summa_scheme_environment_acquire(env);
+            summa_environment_list_push(condemned, &env);
+        }
+    }
+    for (size_t i = 0; i < condemned->length; i++) {
+        summa_scheme_environment_for_each_edge(condemned->value[i], summa_scheme_environment_edge_release, nullptr);
+    }
+    const size_t collected = condemned->length;
+    for (size_t i = 0; i < collected; i++) {
+        summa_scheme_environment_release(condemned->value[i]);
+    }
+    summa_environment_list_free(condemned);
+
+    const size_t next         = SUMMA_SCHEME_LIVE_ENVIRONMENTS * 2;
+    SUMMA_SCHEME_GC_THRESHOLD = next > SUMMA_SCHEME_GC_MIN_THRESHOLD ? next : (size_t)SUMMA_SCHEME_GC_MIN_THRESHOLD;
+
+    SUMMA_SCHEME_GC_RUNNING = false;
+    return collected;
+}
+
+static void summa_scheme_environment_collect_if_due(void) {
+    if (SUMMA_SCHEME_LIVE_ENVIRONMENTS >= SUMMA_SCHEME_GC_THRESHOLD) {
+        summa_scheme_collect_cycles();
+    }
+}
+
+#pragma endregion Environment lifetime
 
 /* The table lives with the builtins; this only needs the names. */
 static size_t      summa_scheme_builtin_count(void);
@@ -2048,6 +2413,19 @@ static SummaSchemeError summa_scheme_builtin_is_pair(const SummaList args, Summa
     return summa_success();
 }
 
+/* The first of the type predicates. It is here rather than with the rest of
+ * that family because environment lifetime needs it: a closure stored into the
+ * frame it captured can only be checked from Scheme by asking what came back
+ * out. */
+static SummaSchemeError summa_scheme_builtin_is_procedure(const SummaList args, SummaSchemeValue* out) {
+    const SummaSchemeError err = summa_scheme_require_arity("procedure?", args, 1);
+    if (err.had) {
+        return err;
+    }
+    *out = summa_make_scheme_boolean(args->value[0].type == SummaSchemeProcedureType);
+    return summa_success();
+}
+
 /* One function plus one row: the global environment binds a procedure per row
  * at startup, and dispatch finds it by name. */
 static const SummaSchemeBuiltin SUMMA_SCHEME_BUILTINS[] = {
@@ -2073,6 +2451,7 @@ static const SummaSchemeBuiltin SUMMA_SCHEME_BUILTINS[] = {
     {"list", summa_scheme_builtin_list},
     {"null?", summa_scheme_builtin_is_null},
     {"pair?", summa_scheme_builtin_is_pair},
+    {"procedure?", summa_scheme_builtin_is_procedure},
 };
 
 static size_t summa_scheme_builtin_count(void) {
@@ -2185,7 +2564,10 @@ static SummaSchemeError summa_scheme_make_closure(const SummaSchemeEnvironment e
         summa_list_push(body, &expression);
     }
 
-    *out = summa_make_scheme_closure(summa_string_make(name), bindings, body, env);
+    /* The capture is a reference, not a borrow: the procedure now holds its
+     * defining environment up, which is what lets it be called after the frame
+     * it was written in has returned. */
+    *out = summa_make_scheme_closure(summa_string_make(name), bindings, body, summa_scheme_environment_acquire(env));
     return summa_success();
 }
 
@@ -2362,7 +2744,11 @@ static SummaSchemeError summa_scheme_let(const char*                  name,
     if (!err.had) {
         err = summa_scheme_evaluate_sequence(frame, form, 2, out);
     }
-    summa_scheme_environment_free(frame);
+    /* Only this function's own reference. A lambda made in the body kept one of
+     * its own, so `(let ((n 7)) (lambda () n))` outlives the form; a letrec
+     * bound into its own frame kept one that points back here, which is the
+     * cycle the collector exists for. */
+    summa_scheme_environment_release(frame);
     return err;
 }
 
@@ -2567,10 +2953,10 @@ SummaSchemeError summa_scheme_procedure_dispatch(SummaSchemeEnvironment env,
 
     const SummaSchemeError err = summa_scheme_evaluate_sequence(frame, proc.body, 0, out);
 
-    /* Evaluation deep-copies, so the result survives the frame -- except for a
-     * procedure created here, whose closure handle this leaves dangling. See
-     * BUILTINS.md. */
-    summa_scheme_environment_free(frame);
+    /* Evaluation deep-copies, so the result survives the frame -- and a
+     * procedure created here holds a reference of its own, so the frame
+     * survives with it rather than being freed under it. */
+    summa_scheme_environment_release(frame);
     return err;
 }
 
