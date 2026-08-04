@@ -17,8 +17,8 @@
  * arithmetic and depth.
  *
  * Iterations: ~810,000, every pair in 100..999, all of them tail calls.
- * The slowest of the suites that finish quickly -- around 7 seconds in a
- * Debug build, and the one to watch if per-call cost ever regresses. */
+ * Under ten seconds in a Debug build, which makes it the one to watch if
+ * per-call cost ever regresses. */
 void test_scheme_euler_004_largest_palindrome_product() {
     assert_euler_answer(EULER_PRELUDE
                         "(define (reverse-number n acc)"

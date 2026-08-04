@@ -12,7 +12,7 @@
 /* Problem 7 -- the 10001st prime.
  *
  * Iterations: millions, counting odd candidates and trial-dividing each.
- * Around 7 seconds in a Debug build -- slow, but it finishes, so there is
+ * Under ten seconds in a Debug build -- slow, but it finishes, so there is
  * nothing here to mark. */
 void test_scheme_euler_007_ten_thousand_and_first_prime() {
     assert_euler_answer(EULER_PRELUDE "(define (find-prime index current-index current-prime num)"

@@ -334,20 +334,21 @@ counting cannot reclaim. Covered by
 and `tests/scheme/scheme.lifetime.test.c`.
 
 Proper tail calls, through the trampoline in `summa_scheme_evaluate_inner`. Nine
-of the ten euler suites pass; a tail loop iterating a million deep is ordinary
-now, where the old ceiling was 998.
+of the ten euler suites run and pass; a tail loop iterating a million deep is
+ordinary now, where the old ceiling was 998.
 
 **Not done.** `/`, the equality procedures, the remaining type predicates,
 `display` and `newline`.
 
-The remaining structural gap is not depth any more, it is *speed*. Problem 10 is
-roughly 10^8 Scheme-level calls, and every one of them mallocs a frame, deep
-copies each argument into it, allocates a string per binding name, and finds
-both the procedure and each parameter by `strcmp` down a linked chain of
-environments. Symbol interning, arguments moved rather than copied, and a
-binding lookup that is not a linear scan are the three obvious buys — and all
-three want a measurement first rather than a guess. Walking a list is bounded by
-memory rather than by `SUMMA_SCHEME_MAX_DEPTH` when the walk is written tail
+The remaining structural gap is not depth any more, it is *speed*, and euler
+problem 10 is where it shows: roughly 10^8 Scheme-level calls, each one
+mallocing a frame, deep copying its arguments into it, allocating a string per
+binding name, and finding both the procedure and each parameter by `strcmp` down
+a linked chain of environments. That case is left un-run for exactly that
+reason. Symbol interning, arguments moved rather than copied, and a binding
+lookup that is not a linear scan are the three obvious buys — and all three want
+a measurement first rather than a guess. Walking a list is bounded by memory
+rather than by `SUMMA_SCHEME_MAX_DEPTH` when the walk is written tail
 recursively; written the other way — `(cons (f (car l)) (map f (cdr l)))` — it
 still costs a C frame per element, and always will, because it has work left to
 do after the call.
