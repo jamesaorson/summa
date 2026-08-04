@@ -97,12 +97,16 @@ as a segfault.
 
 `summa_scheme_value_equals` already backs `equal?`.
 
-### Type predicates — still to write
+### Type predicates — one written, the rest still to write
 
 One per arm of `SummaSchemeValueType`.
 
-`boolean?` · `char?` · `number?` · `integer?` · `real?` · `string?` · `symbol?` ·
-`procedure?` · `vector?`
+`procedure?` is implemented. It came in ahead of its family because environment
+lifetime needed it: a closure stored into the frame it captured can only be
+checked from Scheme by asking what came back out.
+
+Still to write: `boolean?` · `char?` · `number?` · `integer?` · `real?` ·
+`string?` · `symbol?` · `vector?`
 
 ### Arithmetic — implemented
 
@@ -173,26 +177,62 @@ form that type-checks as a procedure is a bug that only shows up at runtime, on
 recursive input — `test_scheme_if_does_not_evaluate_the_untaken_alternate` is
 the regression guard.
 
-### Closures outlive their frames
+### Closures own their frames, and cycles are what that costs
 
 A procedure captures its defining environment in
-`SummaSchemeProcedure::closure`, borrowed rather than owned — the same rule
-`SummaSchemeEnvironment_t::parent` already follows. That gives correct lexical
-scoping (`test_scheme_procedures_are_lexically_scoped`) and costs nothing to
-copy.
+`SummaSchemeProcedure::closure`, and that capture is a *reference* — the same
+rule `SummaSchemeEnvironment_t::parent` follows. Environments are reference
+counted, through `ref_count` with the counter carved out of the same allocation
+as the environment, so a handle is the payload and `env - 1` is its counter.
 
-What it does not survive is a closure escaping the frame it closed over:
+The rules, in full:
+
+- `summa_scheme_environment_make` hands back the only reference, and retains the
+  parent it was given. A child holds its parent up.
+- `summa_scheme_value_copy` acquires a procedure's closure;
+  `summa_scheme_value_free` releases it. Those two are the counted edge set.
+- `summa_scheme_procedure_dispatch` and `summa_scheme_let` release the frame
+  they made rather than freeing it, so a procedure created in the body keeps the
+  frame alive by holding a reference of its own.
+
+That is what makes a closure escaping its frame ordinary rather than unsound:
 
 ```scheme
-(define (make-counter) (lambda () count))   ; the lambda's closure is the call
-(make-counter)                              ; frame, freed on the way out
+(define (make-adder n) (lambda (x) (+ x n)))  ; the lambda's closure is the
+(define add5 (make-adder 5))                  ; call frame, and holds it up
+(add5 10)                                     ; => 15
 ```
 
-`summa_scheme_procedure_dispatch` frees the call frame when the body finishes,
-so the returned procedure's `closure` handle dangles. Same for a `lambda`
-returned out of a `let`. This is the case reference-counted environments would
-fix, and it is the one part of the design that is knowingly unsound rather than
-merely unfinished.
+What it costs is cycles. A procedure bound *into* the frame it closes over holds
+that frame up from inside — `environment -> binding -> procedure -> closure ->
+environment` — and the count never reaches zero. `letrec`, an internal `define`
+and a top-level recursive `define` are all that shape, so this is normal code
+rather than clever code, and the per-frame ones leak once per evaluation rather
+than once per program.
+
+A trial-deletion cycle collector reclaims them, and lives with the environment
+code in `scheme.h`. Three things worth knowing about it here:
+
+- **It runs by itself.** `summa_scheme_environment_make` collects once the
+  registry of live environments reaches a threshold, which is retuned to twice
+  the survivors after every pass. `summa_scheme_environment_free` collects
+  unconditionally, so a finished program leaves nothing behind even if it never
+  reached the threshold. `summa_scheme_collect_cycles` is public for a host that
+  wants a pass on its own schedule.
+- **It is trial deletion, not mark-and-sweep**, because the roots are
+  `SummaSchemeEnvironment` values in C locals across the evaluator and no
+  collector can see the C stack. Trial deletion needs no roots: subtract the
+  references environments hold in each other, and whatever still has a count
+  left is held from outside.
+- **One function enumerates an environment's outgoing references**, and both the
+  destructor and the collector call it. Trial deletion's one failure mode is the
+  two traversals disagreeing, and the only reliable way to stop that is to have
+  one traversal. Adding a value type that can carry an environment means adding
+  it to `summa_scheme_environment_for_each_edge` in the same commit.
+
+`tests/scheme/scheme.lifetime.test.c` holds both halves: the escapes are the
+specification refcounting has to meet, and the cycle cases are the regression
+guard on what it costs.
 
 ### Tail calls
 
@@ -220,8 +260,9 @@ Lists are `SummaList` — dynamic arrays, not cons cells. Two consequences:
   another. `set-car!` would type-check and do nothing observable.
 
 Shipping them would be worse than omitting them. Implementing them for real
-means cons cells, which means reference counting, which is the same change the
-closure gotcha above wants.
+means cons cells, which means reference counting — and cons cells can point at
+each other, so it means the cycle collector too. Environments already have both;
+this is the same machinery pointed at a second type.
 
 ### `/` has no correct answer with the current value types
 
@@ -249,16 +290,19 @@ name (`(f 1)`) or an expression (`((lambda (x) x) 1)`), both routed through
 frame that produced them. `summa_scheme_read`, so a program can be written as
 source rather than built as values.
 
-Twenty-two builtins: the arithmetic, comparison, boolean, string and list sets
-above. Recursion has a numeric base case now, which is what the euler suites
-were waiting on — problems 1, 2, 5, 6 and 9 pass.
+Twenty-three builtins: the arithmetic, comparison, boolean, string and list sets
+above, plus `procedure?`. Recursion has a numeric base case now, which is what
+the euler suites were waiting on — problems 1, 2, 5, 6 and 9 pass.
 
-Covered by `tests/scheme/scheme.special_forms.test.c` and
-`tests/scheme/scheme.builtins.test.c`.
+Environment lifetime is settled: reference counted frames, closures that own
+what they captured, and a trial-deletion collector for the cycles that
+counting cannot reclaim. Covered by
+`tests/scheme/scheme.special_forms.test.c`, `tests/scheme/scheme.builtins.test.c`
+and `tests/scheme/scheme.lifetime.test.c`.
 
-**Not done.** `/`, the equality procedures, the type predicates, `display` and
-`newline`. Tail calls, which is what the five remaining euler problems are
-blocked on — each of them iterates past `SUMMA_SCHEME_MAX_DEPTH`.
+**Not done.** `/`, the equality procedures, the remaining type predicates,
+`display` and `newline`. Tail calls, which is what the five remaining euler
+problems are blocked on — each of them iterates past `SUMMA_SCHEME_MAX_DEPTH`.
 
 Tail calls are now the only structural gap. The list procedures gave the
 language its unbounded data structure, but walking one still costs a C frame per
