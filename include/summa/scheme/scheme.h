@@ -246,6 +246,17 @@ bool summa_scheme_truthy(const SummaSchemeValue* value);
  * the loop above never calls in with nothing left to read. */
 SummaSchemeError
 summa_scheme_read(const SummaSchemeEnvironment env, const char* input, const char** rest, SummaSchemeValue* out);
+
+/* Translates one R7RS string escape (7.1.1). `input` points at the backslash;
+ * `*out` receives the single byte the sequence denotes and `rest`, when not
+ * null, is set just past the sequence. Both are untouched on error.
+ *
+ * `\a \b \t \n \r` are the named control characters; `\" \\ \|` stand for
+ * themselves; `\x<hex>;` is a byte in hex. Everything else -- including the
+ * line-continuation escape, which spans a newline and yields no byte at all --
+ * is an error. */
+SummaSchemeError summa_scheme_read_escape(const char* input, const char** rest, char* out);
+
 SummaSchemeError
 summa_scheme_evaluate(const SummaSchemeEnvironment env, const SummaSchemeValue in, SummaSchemeValue* out);
 
@@ -308,6 +319,72 @@ typedef enum {
 } SummaSchemeReadMode;
 
 #include <ctype.h>
+
+SummaSchemeError summa_scheme_read_escape(const char* input, const char** rest, char* out) {
+    if (input[0] != '\\') {
+        return summa_make_error("summa_scheme_read_escape - input does not start with an escape");
+    }
+
+    size_t i     = 1;
+    char   value = input[i];
+    switch (value) {
+    case '\0': {
+        return summa_make_error("summa_scheme_read_escape - escape character had no character beyond");
+    }
+    case 'a': {
+        value = '\a';
+    } break;
+    case 'b': {
+        value = '\b';
+    } break;
+    case 't': {
+        value = '\t';
+    } break;
+    case 'n': {
+        value = '\n';
+    } break;
+    case 'r': {
+        value = '\r';
+    } break;
+    case '"':
+    case '\\':
+    case '|': {
+        /* Stands for itself. */
+    } break;
+    case 'x': {
+        /* `\x<hex>;` -- at least one digit, terminated by a semicolon. */
+        unsigned code   = 0;
+        size_t   digits = 0;
+        while (isxdigit(input[i + 1])) {
+            const char digit = input[++i];
+            code             = code * 16 + (unsigned)(isdigit(digit) ? digit - '0' : tolower(digit) - 'a' + 10);
+            digits++;
+            if (code > 0xFF) {
+                return summa_make_error("summa_scheme_read_escape - \\x escape is out of byte range");
+            }
+        }
+        if (digits == 0 || input[i + 1] != ';') {
+            return summa_make_error("summa_scheme_read_escape - \\x escape wants hex digits then ';'");
+        }
+        i++; /* The ';' terminator. */
+        if (code == 0) {
+            /* Tokens are C strings underneath, so an embedded NUL would
+             * truncate everything after it. */
+            return summa_make_error("summa_scheme_read_escape - \\x escape cannot produce a null character");
+        }
+        value = (char)code;
+    } break;
+    default: {
+        return summa_make_error("summa_scheme_read_escape - unknown string escape");
+    }
+    }
+
+    *out = value;
+    if (rest) {
+        *rest = input + i + 1;
+    }
+    return summa_success();
+}
 
 SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment env,
                                    [[maybe_unused]] const char*                  input,
@@ -433,10 +510,16 @@ SummaSchemeError summa_scheme_read([[maybe_unused]] const SummaSchemeEnvironment
         case SummaSchemeReadModeString: {
             switch (c) {
             case '\\': {
-                c = input[++i];
-                if (!c) {
-                    return summa_make_error("summa_scheme_read - escape character had no character beyond");
+                /* The escape is translated, not pushed verbatim, so `\n` in
+                 * the source becomes one newline byte in the string. */
+                const char*            escape_rest = nullptr;
+                const SummaSchemeError err         = summa_scheme_read_escape(input + i, &escape_rest, &c);
+                if (err.had) {
+                    return err;
                 }
+                /* Leave `i` on the escape's last character so the loop's `++i`
+                 * steps to whatever follows it. */
+                i = (size_t)(escape_rest - input) - 1;
             } break;
             case '"': {
                 goto token_done;
