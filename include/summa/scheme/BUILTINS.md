@@ -191,9 +191,10 @@ The rules, in full:
   parent it was given. A child holds its parent up.
 - `summa_scheme_value_copy` acquires a procedure's closure;
   `summa_scheme_value_free` releases it. Those two are the counted edge set.
-- `summa_scheme_procedure_dispatch` and `summa_scheme_let` release the frame
-  they made rather than freeing it, so a procedure created in the body keeps the
-  frame alive by holding a reference of its own.
+- `summa_scheme_apply` and `summa_scheme_let` release the frame they made rather
+  than freeing it, so a procedure created in the body keeps the frame alive by
+  holding a reference of its own — and so does the trampoline, which took a
+  reference before either of them let go.
 
 That is what makes a closure escaping its frame ordinary rather than unsound:
 
@@ -234,20 +235,52 @@ code in `scheme.h`. Three things worth knowing about it here:
 specification refcounting has to meet, and the cycle cases are the regression
 guard on what it costs.
 
-### Tail calls
+### Tail calls are optimized; the depth guard still is not going anywhere
 
-R7RS mandates proper tail calls. Without them, "Turing-complete" is theoretical
-— a loop written as tail recursion exhausts the C stack.
+R7RS mandates proper tail calls, and `summa_scheme_evaluate_inner` is a
+trampoline: an expression in tail position is handed *back* rather than
+recursed into, and the loop goes round again with a new `(environment,
+expression)` pair. A tail call therefore costs one iteration, not a C frame,
+and a tail loop runs as long as its own arithmetic says it should.
 
-Evaluation is a plain recursive C call, so `SUMMA_SCHEME_MAX_DEPTH` (2000
-evaluate frames, several per Scheme-level call) turns a runaway recursion into
-a diagnosable error instead of a segfault. It is a stopgap, not a design:
-`test_scheme_runaway_recursion_is_an_error_not_a_crash` pins the behavior and
-should be deleted along with the guard.
+Tail positions, all of them: the taken branch of an `if`, the last expression
+of a `begin`, of any procedure body, of a selected `cond` clause, of a `let` /
+`let*` / `letrec` body and of a `when` / `unless` body, and the last operand of
+`and` or `or`. `SummaSchemeSpecialFormFn` takes a `SummaSchemeStep*` for
+exactly this: a form with a tail position fills it in instead of calling
+`summa_scheme_evaluate`.
 
-Whether `summa_scheme_evaluate` becomes a trampoline or keeps an explicit stack
-is worth deciding *before* much depends on the current shape; retrofitting means
-touching every `case`.
+Two things follow, and both are load-bearing:
+
+- **A tail call releases the frame it leaves.** Looping forever while retaining
+  every frame would trade a stack overflow for a leak. The trampoline holds one
+  environment reference, and swaps it for the next one — acquire first, release
+  second, since the frame being left is often what holds the next one up.
+- **The procedure being called may be bound in that very frame.**
+  `(define (twice f x) (f (f x)))` calls `f`, whose only owner is the frame
+  `twice` is running in, so releasing the frame would free the body about to
+  run. `summa_scheme_environment_get_owner` reports which environment held the
+  binding and the evaluator retains it for the call. A refcount bump — not a
+  copy of the body, which is the cost #27 made avoidable.
+
+**Operands are not tail positions**, and that is why `SUMMA_SCHEME_MAX_DEPTH`
+survives. `(+ n (sum (- n 1)))` has work left to do when the call returns, so
+it genuinely needs a C frame per level; without the guard, a deep non-tail
+recursion segfaults instead of erroring. The ceiling is around 1997 levels of
+non-tail recursion, up from 665 before the trampoline — one evaluate frame per
+level now rather than three. `tests/scheme/scheme.tail_calls.test.c` pins both
+halves: every tail position past the old limit, and non-tail recursion still
+erroring cleanly.
+
+The runaway test that used to live in
+`tests/scheme/scheme.special_forms.test.c` is written around `(+ 1 (loop))` for
+the same reason. `(define (loop) (loop))` is a *tail* call, and now runs as the
+correct non-terminating program it always was.
+
+What is *not* optimized is per-call cost. Every call still mallocs a frame,
+copies each argument into it, and allocates a string per binding name, and
+symbols are compared with `strcmp` rather than interned. Tail calls make a
+long-running program terminate; they do not make it fast.
 
 ### `set-car!` and `set-cdr!` have nothing to mutate
 
@@ -292,7 +325,7 @@ source rather than built as values.
 
 Twenty-three builtins: the arithmetic, comparison, boolean, string and list sets
 above, plus `procedure?`. Recursion has a numeric base case now, which is what
-the euler suites were waiting on — problems 1, 2, 5, 6 and 9 pass.
+the euler suites were waiting on.
 
 Environment lifetime is settled: reference counted frames, closures that own
 what they captured, and a trial-deletion collector for the cycles that
@@ -300,12 +333,21 @@ counting cannot reclaim. Covered by
 `tests/scheme/scheme.special_forms.test.c`, `tests/scheme/scheme.builtins.test.c`
 and `tests/scheme/scheme.lifetime.test.c`.
 
-**Not done.** `/`, the equality procedures, the remaining type predicates,
-`display` and `newline`. Tail calls, which is what the five remaining euler
-problems are blocked on — each of them iterates past `SUMMA_SCHEME_MAX_DEPTH`.
+Proper tail calls, through the trampoline in `summa_scheme_evaluate_inner`. Nine
+of the ten euler suites pass; a tail loop iterating a million deep is ordinary
+now, where the old ceiling was 998.
 
-Tail calls are now the only structural gap. The list procedures gave the
-language its unbounded data structure, but walking one still costs a C frame per
-element, so how long a list a program can traverse is bounded by
-`SUMMA_SCHEME_MAX_DEPTH` rather than by memory. That is the shape of the gap,
-not a limit on the evaluator.
+**Not done.** `/`, the equality procedures, the remaining type predicates,
+`display` and `newline`.
+
+The remaining structural gap is not depth any more, it is *speed*. Problem 10 is
+roughly 10^8 Scheme-level calls, and every one of them mallocs a frame, deep
+copies each argument into it, allocates a string per binding name, and finds
+both the procedure and each parameter by `strcmp` down a linked chain of
+environments. Symbol interning, arguments moved rather than copied, and a
+binding lookup that is not a linear scan are the three obvious buys — and all
+three want a measurement first rather than a guess. Walking a list is bounded by
+memory rather than by `SUMMA_SCHEME_MAX_DEPTH` when the walk is written tail
+recursively; written the other way — `(cons (f (car l)) (map f (cdr l)))` — it
+still costs a C frame per element, and always will, because it has work left to
+do after the call.

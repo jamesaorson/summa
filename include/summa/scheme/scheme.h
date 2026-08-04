@@ -268,6 +268,21 @@ SummaSchemeError summa_scheme_environment_get(const SummaSchemeEnvironment env,
 SummaSchemeError
 summa_scheme_environment_get_string(const SummaSchemeEnvironment env, const SummaString str, SummaSchemeBinding* out);
 
+/* The same lookup, and also reports *which* environment in the chain held the
+ * binding. `*out_owner` is borrowed -- it is an ancestor of `env`, so it lives
+ * at least as long as `env` does, and outliving `env` takes an acquire.
+ *
+ * That is what the tail-call trampoline needs it for. A tail call releases the
+ * frame it is leaving, and the procedure it is calling may be bound in that
+ * very frame -- `(define (twice f x) (f (f x)))`, where `f` is a parameter --
+ * so the frame's own binding owns the body about to run. Retaining the holder
+ * for the duration of the call is the cheap fix; deep-copying the body per
+ * iteration is the expensive one. */
+SummaSchemeError summa_scheme_environment_get_owner(const SummaSchemeEnvironment env,
+                                                    const SummaString            str,
+                                                    SummaSchemeBinding*          out,
+                                                    SummaSchemeEnvironment*      out_owner);
+
 /* Rebinds a name wherever the chain already holds it, which environment_set
  * deliberately does not do. Takes ownership of `value` only on success; an
  * unbound name is an error and leaves it with the caller. */
@@ -317,8 +332,11 @@ summa_scheme_evaluate(const SummaSchemeEnvironment env, const SummaSchemeValue i
 SummaSchemeError summa_scheme_print(const SummaSchemeValue value, FILE* out);
 SummaSchemeError summa_scheme_display(const SummaSchemeValue value, FILE* out);
 
-/* Stands in for the missing tail-call optimization: an error beats walking off
- * the C stack. Counted in evaluate frames, several per Scheme-level call. */
+/* The ceiling on *non-tail* recursion -- an error beats walking off the C
+ * stack. Tail calls cost no depth at all: the trampoline in
+ * `summa_scheme_evaluate_inner` loops instead of recursing, so a tail loop runs
+ * as long as its own arithmetic says it should. Non-tail recursion genuinely
+ * needs a C frame per level, which is what this bounds. */
 #define SUMMA_SCHEME_MAX_DEPTH 2000
 
 /* The same guard for reading, which recurses once per level of nesting. Far
@@ -340,6 +358,8 @@ SummaSchemeError summa_scheme_procedure_dispatch(SummaSchemeEnvironment env,
                                                  const SummaList        args,
                                                  SummaSchemeValue*      out);
 SummaSchemeError
+summa_scheme_procedure_dispatch_global(SummaSchemeProcedure proc, const SummaList args, SummaSchemeValue* out);
+SummaSchemeError
 summa_scheme_evaluate_arguments(const SummaSchemeEnvironment env, const SummaList form, SummaList* out);
 void summa_scheme_argument_list_free(SummaList args);
 
@@ -347,23 +367,99 @@ void summa_scheme_argument_list_free(SummaList args);
  * needs it to unwind a half-built list when a datum inside it fails. */
 static void summa_scheme_list_free_deep(SummaList list);
 
-/* Evaluates form[1..], dispatches, releases them. Every call goes through here. */
+/* What one step of evaluation produced: either the value itself, or an
+ * expression the trampoline has to go on and evaluate. The second is what makes
+ * tail calls proper -- the step returns rather than recursing, and
+ * `summa_scheme_evaluate_inner` loops with the new (environment, expression).
+ *
+ * Everything in here is owned by whoever holds the step. The trampoline adopts
+ * the fields it keeps and calls `summa_scheme_step_release` on the rest.
+ *
+ * Two of the fields exist only because releasing the frame a tail call leaves
+ * can free the expression it is about to evaluate. A procedure body belongs
+ * either to a binding -- in which case `body_owner` is the environment holding
+ * it, retained -- or to a procedure value the evaluator produced itself, from
+ * an operator like `((lambda (x) x) 1)`, in which case `body_operator` is that
+ * value, owned outright. `enters_body` says the step moved into a new body and
+ * both are the trampoline's now; a step from a special form stays inside the
+ * body it was already running and leaves them alone. */
+typedef enum {
+    SummaSchemeStepValue, /* `*out` holds the answer. */
+    SummaSchemeStepTail,  /* Evaluate `expression` in `environment`. */
+} SummaSchemeStepKind;
+
+typedef struct {
+    SummaSchemeStepKind kind;
+    /* Borrowed, and valid only while the body anchors below are held. */
+    const SummaSchemeValue* expression;
+    SummaSchemeEnvironment  environment;
+    bool                    enters_body;
+    SummaSchemeEnvironment  body_owner;
+    SummaSchemeValue        body_operator;
+} SummaSchemeStep;
+
+/* Evaluates form[1..] and either dispatches a builtin or builds the call frame
+ * and hands the body's last expression back as a tail step. Every call goes
+ * through here. */
 static SummaSchemeError summa_scheme_apply(const SummaSchemeEnvironment env,
-                                           SummaSchemeProcedure         proc,
+                                           const SummaSchemeProcedure   proc,
                                            const SummaList              form,
-                                           SummaSchemeValue*            out);
+                                           SummaSchemeValue*            out,
+                                           SummaSchemeStep*             step);
 
 /* Dispatched before the operands are touched -- a special form decides for
- * itself which of them get evaluated. */
+ * itself which of them get evaluated.
+ *
+ * `step` arrives as a value step and stays one unless the form has a tail
+ * position: `if` hands back the taken branch, `let` its last body expression,
+ * `and` its last operand, and so on. Handing the expression back rather than
+ * evaluating it is the whole of the tail-call optimization -- a form that calls
+ * `summa_scheme_evaluate` on a sub-expression in tail position is spending a C
+ * frame it does not have to. */
 typedef SummaSchemeError (*SummaSchemeSpecialFormFn)(const SummaSchemeEnvironment env,
                                                      const SummaList              form,
-                                                     SummaSchemeValue*            out);
+                                                     SummaSchemeValue*            out,
+                                                     SummaSchemeStep*             step);
 
 static SummaSchemeSpecialFormFn summa_scheme_special_form_lookup(const char* name);
-static SummaSchemeError         summa_scheme_evaluate_sequence(const SummaSchemeEnvironment env,
-                                                               const SummaList              form,
-                                                               size_t                       start,
-                                                               SummaSchemeValue*            out);
+
+/* Evaluates form[start..] for effect and leaves the last expression to the
+ * trampoline. The body rule shared by lambda, begin, let, cond, when and
+ * unless, and the reason a procedure body's last expression is a tail
+ * position. */
+static SummaSchemeError summa_scheme_evaluate_sequence_tail(const SummaSchemeEnvironment env,
+                                                            const SummaList              form,
+                                                            size_t                       start,
+                                                            SummaSchemeValue*            out,
+                                                            SummaSchemeStep*             step);
+
+/* The same, run to a value -- for the callers that are not the trampoline. */
+static SummaSchemeError summa_scheme_evaluate_sequence(const SummaSchemeEnvironment env,
+                                                       const SummaList              form,
+                                                       size_t                       start,
+                                                       SummaSchemeValue*            out);
+
+#define summa_scheme_step_value() \
+    ((SummaSchemeStep){           \
+        .kind = SummaSchemeStepValue, .expression = nullptr, .environment = nullptr, .enters_body = false})
+
+/* Both setters acquire, so the step always hands its holder a reference of its
+ * own -- including the forms that continue in the environment they were already
+ * in, which keeps the trampoline's bookkeeping one shape rather than two. */
+static void summa_scheme_step_set_tail(SummaSchemeStep*             step,
+                                       const SummaSchemeValue*      expression,
+                                       const SummaSchemeEnvironment environment) {
+    step->kind        = SummaSchemeStepTail;
+    step->expression  = expression;
+    step->environment = summa_scheme_environment_acquire(environment);
+}
+
+static void summa_scheme_step_release(SummaSchemeStep* step) {
+    summa_scheme_environment_release(step->environment);
+    summa_scheme_environment_release(step->body_owner);
+    summa_scheme_value_free(&step->body_operator);
+    *step = summa_scheme_step_value();
+}
 
 /* The value R7RS leaves unspecified: `(if #f #f)`, `set!`, `display`. */
 #define summa_scheme_unspecified() summa_make_scheme_boolean(false)
@@ -933,7 +1029,9 @@ static size_t SUMMA_SCHEME_DEPTH = 0;
 static SummaSchemeError
 summa_scheme_evaluate_inner(const SummaSchemeEnvironment env, const SummaSchemeValue in, SummaSchemeValue* out);
 
-/* All recursion re-enters here, so the depth guard is written once. */
+/* Every *non-tail* recursion re-enters here, so the depth guard is written
+ * once. A tail call never gets this far -- it loops inside
+ * `summa_scheme_evaluate_inner` and costs no depth. */
 SummaSchemeError
 summa_scheme_evaluate(const SummaSchemeEnvironment env, const SummaSchemeValue in, SummaSchemeValue* out) {
     if (!out) {
@@ -944,7 +1042,8 @@ summa_scheme_evaluate(const SummaSchemeEnvironment env, const SummaSchemeValue i
     *out = summa_scheme_unspecified();
 
     if (SUMMA_SCHEME_DEPTH >= SUMMA_SCHEME_MAX_DEPTH) {
-        return summa_make_error("summa_scheme_evaluate - recursion limit exceeded (tail calls are not optimized yet)");
+        return summa_make_error(
+            "summa_scheme_evaluate - recursion limit exceeded (non-tail recursion needs a C frame per level)");
     }
     SUMMA_SCHEME_DEPTH++;
     const SummaSchemeError err = summa_scheme_evaluate_inner(env, in, out);
@@ -952,26 +1051,29 @@ summa_scheme_evaluate(const SummaSchemeEnvironment env, const SummaSchemeValue i
     return err;
 }
 
-static SummaSchemeError summa_scheme_evaluate_inner([[maybe_unused]] const SummaSchemeEnvironment env,
-                                                    const SummaSchemeValue                        in,
-                                                    SummaSchemeValue*                             out) {
-    switch (in.type) {
+/* One step: either the answer, or the expression the trampoline goes round
+ * again with. Nothing here recurses in tail position. */
+static SummaSchemeError summa_scheme_evaluate_step(const SummaSchemeEnvironment env,
+                                                   const SummaSchemeValue*      in,
+                                                   SummaSchemeValue*            out,
+                                                   SummaSchemeStep*             step) {
+    switch (in->type) {
     case SummaSchemeBooleanType: {
-        *out = summa_make_scheme_boolean(in.value.boolean.value);
+        *out = summa_make_scheme_boolean(in->value.boolean.value);
     } break;
     case SummaSchemeCharacterType: {
-        *out = summa_make_scheme_character(in.value.character.value);
+        *out = summa_make_scheme_character(in->value.character.value);
     } break;
     case SummaSchemeFloatingType: {
-        *out = summa_make_scheme_floating(in.value.floating.value);
+        *out = summa_make_scheme_floating(in->value.floating.value);
     } break;
     case SummaSchemeIntegerType: {
-        *out = summa_make_scheme_integer(in.value.integer.value);
+        *out = summa_make_scheme_integer(in->value.integer.value);
     } break;
     case SummaSchemeListType: {
         /* A list in evaluated position is a combination, never data. `(1 2 3)`
          * is an error, and the way to get the list itself is to quote it. */
-        SummaList form = in.value.list.value;
+        const SummaList form = in->value.list.value;
         if (!form || form->length == 0) {
             return summa_make_error("Illegal empty combination: ()");
         }
@@ -983,24 +1085,40 @@ static SummaSchemeError summa_scheme_evaluate_inner([[maybe_unused]] const Summa
             const SummaSchemeSpecialFormFn special =
                 summa_scheme_special_form_lookup(form->value[0].value.symbol.value->value);
             if (special) {
-                return special(env, form, out);
+                return special(env, form, out, step);
             }
 
             /* Resolved through the binding rather than by evaluating the
              * symbol, which would deep-copy the procedure on every call. */
             SummaSchemeBinding     head;
-            const SummaSchemeError lookup = summa_scheme_environment_get(env, form->value[0].value.symbol, &head);
+            SummaSchemeEnvironment owner = nullptr;
+            const SummaSchemeError lookup =
+                summa_scheme_environment_get_owner(env, form->value[0].value.symbol.value, &head, &owner);
             if (lookup.had) {
                 return lookup;
             }
             if (head.value.type != SummaSchemeProcedureType) {
                 return summa_scheme_wrong_type_to_apply(&head.value);
             }
-            return summa_scheme_apply(env, head.value.value.procedure, form, out);
+
+            /* Retained across the call, because the call may be a tail call and
+             * the trampoline is about to release the frame this binding lives
+             * in -- which would free the very body it is about to run. A
+             * refcount bump, not a copy of the body. */
+            const SummaSchemeEnvironment holder = summa_scheme_environment_acquire(owner);
+            const SummaSchemeError       err    = summa_scheme_apply(env, head.value.value.procedure, form, out, step);
+            if (!err.had && step->kind == SummaSchemeStepTail) {
+                step->enters_body = true;
+                step->body_owner  = holder;
+            } else {
+                summa_scheme_environment_release(holder);
+            }
+            return err;
         }
 
         /* Any other operator is an expression: `((lambda (x) x) 1)`, and also
-         * `(1 2 3)`, where the 1 evaluates to itself and then fails to apply. */
+         * `(1 2 3)`, where the 1 evaluates to itself and then fails to apply.
+         * The operator is not a tail position, so this one recurses. */
         SummaSchemeValue operator_value;
         SummaSchemeError err = summa_scheme_evaluate(env, form->value[0], &operator_value);
         if (err.had) {
@@ -1011,22 +1129,29 @@ static SummaSchemeError summa_scheme_evaluate_inner([[maybe_unused]] const Summa
             summa_scheme_value_free(&operator_value);
             return err;
         }
-        err = summa_scheme_apply(env, operator_value.value.procedure, form, out);
-        summa_scheme_value_free(&operator_value);
+        err = summa_scheme_apply(env, operator_value.value.procedure, form, out, step);
+        if (!err.had && step->kind == SummaSchemeStepTail) {
+            /* No binding owns this one, so the value itself is what holds the
+             * body up. Moved into the step rather than freed. */
+            step->enters_body   = true;
+            step->body_operator = operator_value;
+        } else {
+            summa_scheme_value_free(&operator_value);
+        }
         return err;
     } break;
     case SummaSchemeProcedureType: {
-        return summa_scheme_value_copy(out, &in);
+        return summa_scheme_value_copy(out, in);
     } break;
     case SummaSchemeStringType: {
-        *out = summa_make_scheme_string(in.value.string.value->value);
+        *out = summa_make_scheme_string(in->value.string.value->value);
     } break;
     case SummaSchemeSymbolType: {
         /* A symbol in evaluated position is a variable reference, so an unbound
          * one is an error rather than a value. Quoting is what yields the
          * symbol itself. */
         SummaSchemeBinding     binding;
-        const SummaSchemeError err = summa_scheme_environment_get(env, in.value.symbol, &binding);
+        const SummaSchemeError err = summa_scheme_environment_get(env, in->value.symbol, &binding);
         if (err.had) {
             return err;
         }
@@ -1035,7 +1160,7 @@ static SummaSchemeError summa_scheme_evaluate_inner([[maybe_unused]] const Summa
     } break;
     case SummaSchemeVectorType: {
         /* Self-evaluating, unlike a list. */
-        return summa_scheme_value_copy(out, &in);
+        return summa_scheme_value_copy(out, in);
     } break;
     default: {
         return summa_make_error("summa_scheme_evaluate - Invalid in type");
@@ -1043,6 +1168,59 @@ static SummaSchemeError summa_scheme_evaluate_inner([[maybe_unused]] const Summa
     }
 
     return summa_success();
+}
+
+/* The trampoline. A step that lands in tail position hands back
+ * (environment, expression) instead of recursing, and this loops with them --
+ * so a tail call costs one iteration here rather than a C frame, and a tail
+ * loop runs forever without growing the stack.
+ *
+ * Three references are held across an iteration, and the order they are swapped
+ * in is the whole correctness argument:
+ *
+ * - `environment` is where the next expression is evaluated. Every step hands
+ *   back a reference of its own, so the frame being left is released *after*
+ *   the one replacing it is in hand.
+ * - `body_owner` and `body_value` keep the expression itself alive. It is
+ *   borrowed -- a pointer into some procedure's body -- and the frame this loop
+ *   is releasing may be that body's only owner. See `SummaSchemeStep`.
+ *
+ * Nothing accumulates: one reference in, one out, per iteration. A million-step
+ * tail loop leaves the live environment count exactly where it found it. */
+static SummaSchemeError
+summa_scheme_evaluate_inner(const SummaSchemeEnvironment env, const SummaSchemeValue in, SummaSchemeValue* out) {
+    const SummaSchemeValue* expression  = &in;
+    SummaSchemeEnvironment  environment = summa_scheme_environment_acquire(env);
+    SummaSchemeEnvironment  body_owner  = nullptr;
+    SummaSchemeValue        body_value  = {};
+    SummaSchemeError        err         = summa_success();
+
+    for (;;) {
+        SummaSchemeStep step = summa_scheme_step_value();
+
+        err = summa_scheme_evaluate_step(environment, expression, out, &step);
+        if (err.had || step.kind == SummaSchemeStepValue) {
+            summa_scheme_step_release(&step);
+            break;
+        }
+
+        if (step.enters_body) {
+            /* The step already acquired what replaces these, so releasing them
+             * here cannot pull the new body out from under itself. */
+            summa_scheme_environment_release(body_owner);
+            summa_scheme_value_free(&body_value);
+            body_owner = step.body_owner;
+            body_value = step.body_operator;
+        }
+        summa_scheme_environment_release(environment);
+        environment = step.environment;
+        expression  = step.expression;
+    }
+
+    summa_scheme_environment_release(environment);
+    summa_scheme_environment_release(body_owner);
+    summa_scheme_value_free(&body_value);
+    return err;
 }
 
 static SummaSchemeError summa_scheme_print_styled(const SummaSchemeValue value, FILE* out, bool readable);
@@ -1619,9 +1797,9 @@ void summa_scheme_environment_free(const SummaSchemeEnvironment env) {
  *
  * Mark-and-sweep is not an option here: it needs root enumeration, and the
  * roots are `SummaSchemeEnvironment` values held in C locals across
- * summa_scheme_evaluate_inner, summa_scheme_let, summa_scheme_procedure_dispatch
- * and summa_scheme_evaluate_sequence, where no collector can see them. Trial
- * deletion needs no roots. It works from the counts:
+ * summa_scheme_evaluate_inner, summa_scheme_let, summa_scheme_procedure_frame
+ * and summa_scheme_apply, where no collector can see them. Trial deletion needs
+ * no roots. It works from the counts:
  *
  *   1. give every live environment a trial count equal to its real one;
  *   2. subtract one for every reference held by another live environment;
@@ -1769,15 +1947,25 @@ SummaSchemeError summa_scheme_environment_get(const SummaSchemeEnvironment env,
 
 SummaSchemeError
 summa_scheme_environment_get_string(const SummaSchemeEnvironment env, const SummaString str, SummaSchemeBinding* out) {
-    for (size_t i = 0; i < env->bindings->length; i++) {
-        SummaSchemeBinding binding = env->bindings->value[i];
-        if (summa_string_cmp(binding.name, str) == 0) {
-            *out = binding;
-            return summa_success();
+    SummaSchemeEnvironment owner = nullptr;
+    return summa_scheme_environment_get_owner(env, str, out, &owner);
+}
+
+SummaSchemeError summa_scheme_environment_get_owner(const SummaSchemeEnvironment env,
+                                                    const SummaString            str,
+                                                    SummaSchemeBinding*          out,
+                                                    SummaSchemeEnvironment*      out_owner) {
+    /* Iterative rather than recursive over the chain: the owner is what the
+     * loop already has to carry, and a deep lexical nesting costs no stack. */
+    for (SummaSchemeEnvironment scope = env; scope; scope = scope->parent) {
+        for (size_t i = 0; i < scope->bindings->length; i++) {
+            const SummaSchemeBinding binding = scope->bindings->value[i];
+            if (summa_string_cmp(binding.name, str) == 0) {
+                *out       = binding;
+                *out_owner = scope;
+                return summa_success();
+            }
         }
-    }
-    if (env->parent) {
-        return summa_scheme_environment_get_string(env->parent, str, out);
     }
     snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "Unbound variable: %s", str->value);
     return summa_make_error(ERROR_MESSAGE);
@@ -1829,16 +2017,39 @@ void summa_scheme_argument_list_free(SummaList args) {
     summa_list_free(args);
 }
 
+static SummaSchemeError summa_scheme_procedure_frame(const SummaSchemeEnvironment env,
+                                                     const SummaSchemeProcedure   proc,
+                                                     const SummaList              args,
+                                                     SummaSchemeEnvironment*      out);
+
 static SummaSchemeError summa_scheme_apply(const SummaSchemeEnvironment env,
-                                           SummaSchemeProcedure         proc,
+                                           const SummaSchemeProcedure   proc,
                                            const SummaList              form,
-                                           SummaSchemeValue*            out) {
+                                           SummaSchemeValue*            out,
+                                           SummaSchemeStep*             step) {
     SummaList        args = nullptr;
     SummaSchemeError err  = summa_scheme_evaluate_arguments(env, form, &args);
     if (!err.had) {
-        err = summa_scheme_procedure_dispatch(env, proc, args, out);
+        if (!proc.body) {
+            /* A builtin runs to a value here and now -- there is no body to
+             * continue into, so nothing to hand back. */
+            err = summa_scheme_procedure_dispatch_global(proc, args, out);
+        } else {
+            SummaSchemeEnvironment frame = nullptr;
+            err                          = summa_scheme_procedure_frame(env, proc, args, &frame);
+            if (!err.had) {
+                /* The body's last expression is a tail position, so the call
+                 * ends here rather than nesting: the trampoline picks it up
+                 * with the frame this built. `make_closure` guarantees at least
+                 * one body expression, so this always yields a tail step. */
+                err = summa_scheme_evaluate_sequence_tail(frame, proc.body, 0, out, step);
+                /* Only this function's reference -- the step took one of its
+                 * own, and so does anything the body defined. */
+                summa_scheme_environment_release(frame);
+            }
+        }
     }
-    /* Arguments die with the call; dispatch copies out anything it returns. */
+    /* Arguments die with the call; the frame copied what it bound. */
     summa_scheme_argument_list_free(args);
     return err;
 }
@@ -2477,30 +2688,51 @@ summa_scheme_procedure_dispatch_global(SummaSchemeProcedure proc, const SummaLis
 
 #pragma region Special forms
 
-/* Evaluates form[start..] and yields the last value -- the body rule shared by
- * lambda, begin, let, cond, when and unless. An empty range is not an error. */
+/* Everything but the last expression is evaluated here, for effect; the last
+ * one is the tail position and goes back to the trampoline. An empty range is
+ * not an error -- it is the unspecified value, and no tail step at all. */
+static SummaSchemeError summa_scheme_evaluate_sequence_tail(const SummaSchemeEnvironment env,
+                                                            const SummaList              form,
+                                                            size_t                       start,
+                                                            SummaSchemeValue*            out,
+                                                            SummaSchemeStep*             step) {
+    if (start >= form->length) {
+        *out = summa_scheme_unspecified();
+        return summa_success();
+    }
+
+    for (size_t i = start; i + 1 < form->length; i++) {
+        SummaSchemeValue       next;
+        const SummaSchemeError err = summa_scheme_evaluate(env, form->value[i], &next);
+        if (err.had) {
+            return err;
+        }
+        /* Evaluated only for its effect: a body expression that is not the last
+         * one has nowhere for its value to go. */
+        summa_scheme_value_free(&next);
+    }
+
+    summa_scheme_step_set_tail(step, &form->value[form->length - 1], env);
+    return summa_success();
+}
+
 static SummaSchemeError summa_scheme_evaluate_sequence(const SummaSchemeEnvironment env,
                                                        const SummaList              form,
                                                        size_t                       start,
                                                        SummaSchemeValue*            out) {
-    SummaSchemeValue result = summa_scheme_unspecified();
-    for (size_t i = start; i < form->length; i++) {
-        SummaSchemeValue       next;
-        const SummaSchemeError err = summa_scheme_evaluate(env, form->value[i], &next);
-        if (err.had) {
-            summa_scheme_value_free(&result);
-            return err;
-        }
-        summa_scheme_value_free(&result);
-        result = next;
+    SummaSchemeStep  step = summa_scheme_step_value();
+    SummaSchemeError err  = summa_scheme_evaluate_sequence_tail(env, form, start, out, &step);
+    if (!err.had && step.kind == SummaSchemeStepTail) {
+        err = summa_scheme_evaluate(step.environment, *step.expression, out);
     }
-    *out = result;
-    return summa_success();
+    summa_scheme_step_release(&step);
+    return err;
 }
 
 static SummaSchemeError summa_scheme_special_quote([[maybe_unused]] const SummaSchemeEnvironment env,
                                                    const SummaList                               form,
-                                                   SummaSchemeValue*                             out) {
+                                                   SummaSchemeValue*                             out,
+                                                   [[maybe_unused]] SummaSchemeStep*             step) {
     if (form->length != 2) {
         return summa_make_error("quote - expects exactly one operand");
     }
@@ -2508,12 +2740,16 @@ static SummaSchemeError summa_scheme_special_quote([[maybe_unused]] const SummaS
     return summa_scheme_value_copy(out, &form->value[1]);
 }
 
-static SummaSchemeError
-summa_scheme_special_if(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+static SummaSchemeError summa_scheme_special_if(const SummaSchemeEnvironment env,
+                                                const SummaList              form,
+                                                SummaSchemeValue*            out,
+                                                SummaSchemeStep*             step) {
     if (form->length < 3 || form->length > 4) {
         return summa_make_error("if - expects (if test consequent [alternate])");
     }
 
+    /* The test is not a tail position -- its value decides something here, so
+     * this one recurses. */
     SummaSchemeValue       test;
     const SummaSchemeError err = summa_scheme_evaluate(env, form->value[1], &test);
     if (err.had) {
@@ -2522,12 +2758,17 @@ summa_scheme_special_if(const SummaSchemeEnvironment env, const SummaList form, 
     const bool truthy = summa_scheme_truthy(&test);
     summa_scheme_value_free(&test);
 
-    /* Exactly one branch. Recursion terminating rests on this. */
+    /* Exactly one branch, and it is a tail position: handed back rather than
+     * evaluated, which is what makes `(if done acc (loop (- n 1) ...))` a loop
+     * rather than a stack. Recursion terminating rests on the first half of
+     * that; recursion being unbounded rests on the second. */
     if (truthy) {
-        return summa_scheme_evaluate(env, form->value[2], out);
+        summa_scheme_step_set_tail(step, &form->value[2], env);
+        return summa_success();
     }
     if (form->length == 4) {
-        return summa_scheme_evaluate(env, form->value[3], out);
+        summa_scheme_step_set_tail(step, &form->value[3], env);
+        return summa_success();
     }
     *out = summa_scheme_unspecified();
     return summa_success();
@@ -2571,8 +2812,10 @@ static SummaSchemeError summa_scheme_make_closure(const SummaSchemeEnvironment e
     return summa_success();
 }
 
-static SummaSchemeError
-summa_scheme_special_lambda(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+static SummaSchemeError summa_scheme_special_lambda(const SummaSchemeEnvironment      env,
+                                                    const SummaList                   form,
+                                                    SummaSchemeValue*                 out,
+                                                    [[maybe_unused]] SummaSchemeStep* step) {
     if (form->length < 3) {
         return summa_make_error("lambda - expects (lambda (parameters ...) body ...)");
     }
@@ -2582,8 +2825,12 @@ summa_scheme_special_lambda(const SummaSchemeEnvironment env, const SummaList fo
     return summa_scheme_make_closure(env, "lambda", form->value[1].value.list.value, form, 2, out);
 }
 
-static SummaSchemeError
-summa_scheme_special_define(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+/* `define` has no tail position: the value expression's result is bound rather
+ * than returned, so there is still work to do after it. */
+static SummaSchemeError summa_scheme_special_define(const SummaSchemeEnvironment      env,
+                                                    const SummaList                   form,
+                                                    SummaSchemeValue*                 out,
+                                                    [[maybe_unused]] SummaSchemeStep* step) {
     if (form->length < 3) {
         return summa_make_error("define - expects (define name value) or (define (name parameters ...) body ...)");
     }
@@ -2635,8 +2882,10 @@ summa_scheme_special_define(const SummaSchemeEnvironment env, const SummaList fo
     return summa_success();
 }
 
-static SummaSchemeError
-summa_scheme_special_set(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+static SummaSchemeError summa_scheme_special_set(const SummaSchemeEnvironment      env,
+                                                 const SummaList                   form,
+                                                 SummaSchemeValue*                 out,
+                                                 [[maybe_unused]] SummaSchemeStep* step) {
     if (form->length != 3) {
         return summa_make_error("set! - expects (set! name value)");
     }
@@ -2661,9 +2910,11 @@ summa_scheme_special_set(const SummaSchemeEnvironment env, const SummaList form,
     return summa_success();
 }
 
-static SummaSchemeError
-summa_scheme_special_begin(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
-    return summa_scheme_evaluate_sequence(env, form, 1, out);
+static SummaSchemeError summa_scheme_special_begin(const SummaSchemeEnvironment env,
+                                                   const SummaList              form,
+                                                   SummaSchemeValue*            out,
+                                                   SummaSchemeStep*             step) {
+    return summa_scheme_evaluate_sequence_tail(env, form, 1, out, step);
 }
 
 /* The three flavours differ only in which environment the initializers see. */
@@ -2692,10 +2943,11 @@ static SummaSchemeError summa_scheme_let_clause(const char*              name,
 }
 
 static SummaSchemeError summa_scheme_let(const char*                  name,
-                                         SummaSchemeLetKind           kind,
+                                         const SummaSchemeLetKind     kind,
                                          const SummaSchemeEnvironment env,
                                          const SummaList              form,
-                                         SummaSchemeValue*            out) {
+                                         SummaSchemeValue*            out,
+                                         SummaSchemeStep*             step) {
     if (form->length < 3) {
         snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - expects (%s ((name value) ...) body ...)", name, name);
         return summa_make_error(ERROR_MESSAGE);
@@ -2742,7 +2994,10 @@ static SummaSchemeError summa_scheme_let(const char*                  name,
     }
 
     if (!err.had) {
-        err = summa_scheme_evaluate_sequence(frame, form, 2, out);
+        /* The last body expression is a tail position, evaluated in the frame.
+         * The step acquires its own reference to it, which is what lets the
+         * release below happen before the body has run. */
+        err = summa_scheme_evaluate_sequence_tail(frame, form, 2, out, step);
     }
     /* Only this function's own reference. A lambda made in the body kept one of
      * its own, so `(let ((n 7)) (lambda () n))` outlives the form; a letrec
@@ -2752,23 +3007,31 @@ static SummaSchemeError summa_scheme_let(const char*                  name,
     return err;
 }
 
-static SummaSchemeError
-summa_scheme_special_let(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
-    return summa_scheme_let("let", SUMMA_SCHEME_LET_PARALLEL, env, form, out);
+static SummaSchemeError summa_scheme_special_let(const SummaSchemeEnvironment env,
+                                                 const SummaList              form,
+                                                 SummaSchemeValue*            out,
+                                                 SummaSchemeStep*             step) {
+    return summa_scheme_let("let", SUMMA_SCHEME_LET_PARALLEL, env, form, out, step);
 }
 
-static SummaSchemeError
-summa_scheme_special_let_star(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
-    return summa_scheme_let("let*", SUMMA_SCHEME_LET_SEQUENTIAL, env, form, out);
+static SummaSchemeError summa_scheme_special_let_star(const SummaSchemeEnvironment env,
+                                                      const SummaList              form,
+                                                      SummaSchemeValue*            out,
+                                                      SummaSchemeStep*             step) {
+    return summa_scheme_let("let*", SUMMA_SCHEME_LET_SEQUENTIAL, env, form, out, step);
 }
 
-static SummaSchemeError
-summa_scheme_special_letrec(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
-    return summa_scheme_let("letrec", SUMMA_SCHEME_LET_RECURSIVE, env, form, out);
+static SummaSchemeError summa_scheme_special_letrec(const SummaSchemeEnvironment env,
+                                                    const SummaList              form,
+                                                    SummaSchemeValue*            out,
+                                                    SummaSchemeStep*             step) {
+    return summa_scheme_let("letrec", SUMMA_SCHEME_LET_RECURSIVE, env, form, out, step);
 }
 
-static SummaSchemeError
-summa_scheme_special_cond(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
+static SummaSchemeError summa_scheme_special_cond(const SummaSchemeEnvironment env,
+                                                  const SummaList              form,
+                                                  SummaSchemeValue*            out,
+                                                  SummaSchemeStep*             step) {
     for (size_t i = 1; i < form->length; i++) {
         const SummaSchemeValue clause = form->value[i];
         if (clause.type != SummaSchemeListType || !clause.value.list.value || clause.value.list.value->length == 0) {
@@ -2779,9 +3042,10 @@ summa_scheme_special_cond(const SummaSchemeEnvironment env, const SummaList form
         const bool is_else = body->value[0].type == SummaSchemeSymbolType &&
                              strcmp(body->value[0].value.symbol.value->value, "else") == 0;
         if (is_else) {
-            return summa_scheme_evaluate_sequence(env, body, 1, out);
+            return summa_scheme_evaluate_sequence_tail(env, body, 1, out, step);
         }
 
+        /* The test decides which clause runs, so it is not a tail position. */
         SummaSchemeValue       test;
         const SummaSchemeError err = summa_scheme_evaluate(env, body->value[0], &test);
         if (err.had) {
@@ -2797,7 +3061,8 @@ summa_scheme_special_cond(const SummaSchemeEnvironment env, const SummaList form
             return summa_success();
         }
         summa_scheme_value_free(&test);
-        return summa_scheme_evaluate_sequence(env, body, 1, out);
+        /* The selected clause's last expression is the tail position. */
+        return summa_scheme_evaluate_sequence_tail(env, body, 1, out, step);
     }
 
     /* No clause matched. */
@@ -2806,52 +3071,60 @@ summa_scheme_special_cond(const SummaSchemeEnvironment env, const SummaList form
 }
 
 /* Both return the operand that decided them, not a boolean, and stop early --
- * which is why neither can be a builtin. */
-static SummaSchemeError
-summa_scheme_special_and(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
-    SummaSchemeValue result = summa_make_scheme_boolean(true);
-    for (size_t i = 1; i < form->length; i++) {
+ * which is why neither can be a builtin.
+ *
+ * The last operand is a tail position in both: whatever it evaluates to is the
+ * form's own answer, with nothing left to test. Every operand before it has its
+ * truthiness read here, so those recurse. */
+static SummaSchemeError summa_scheme_special_and_or(const bool                   stop_on_truthy,
+                                                    const SummaSchemeEnvironment env,
+                                                    const SummaList              form,
+                                                    SummaSchemeValue*            out,
+                                                    SummaSchemeStep*             step) {
+    if (form->length == 1) {
+        /* `(and)` is #t and `(or)` is #f -- the identity of each. */
+        *out = summa_make_scheme_boolean(!stop_on_truthy);
+        return summa_success();
+    }
+
+    for (size_t i = 1; i + 1 < form->length; i++) {
         SummaSchemeValue       next;
         const SummaSchemeError err = summa_scheme_evaluate(env, form->value[i], &next);
         if (err.had) {
-            summa_scheme_value_free(&result);
             return err;
         }
-        summa_scheme_value_free(&result);
-        result = next;
-        if (!summa_scheme_truthy(&result)) {
-            break;
+        if (summa_scheme_truthy(&next) == stop_on_truthy) {
+            /* Decided early, and the deciding operand is the answer. */
+            *out = next;
+            return summa_success();
         }
+        summa_scheme_value_free(&next);
     }
-    *out = result;
+
+    summa_scheme_step_set_tail(step, &form->value[form->length - 1], env);
     return summa_success();
 }
 
-static SummaSchemeError
-summa_scheme_special_or(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
-    SummaSchemeValue result = summa_make_scheme_boolean(false);
-    for (size_t i = 1; i < form->length; i++) {
-        SummaSchemeValue       next;
-        const SummaSchemeError err = summa_scheme_evaluate(env, form->value[i], &next);
-        if (err.had) {
-            summa_scheme_value_free(&result);
-            return err;
-        }
-        summa_scheme_value_free(&result);
-        result = next;
-        if (summa_scheme_truthy(&result)) {
-            break;
-        }
-    }
-    *out = result;
-    return summa_success();
+static SummaSchemeError summa_scheme_special_and(const SummaSchemeEnvironment env,
+                                                 const SummaList              form,
+                                                 SummaSchemeValue*            out,
+                                                 SummaSchemeStep*             step) {
+    return summa_scheme_special_and_or(false, env, form, out, step);
+}
+
+static SummaSchemeError summa_scheme_special_or(const SummaSchemeEnvironment env,
+                                                const SummaList              form,
+                                                SummaSchemeValue*            out,
+                                                SummaSchemeStep*             step) {
+    return summa_scheme_special_and_or(true, env, form, out, step);
 }
 
 static SummaSchemeError summa_scheme_when_unless(const char*                  name,
-                                                 bool                         run_when_truthy,
+                                                 const bool                   run_when_truthy,
                                                  const SummaSchemeEnvironment env,
                                                  const SummaList              form,
-                                                 SummaSchemeValue*            out) {
+                                                 SummaSchemeValue*            out,
+                                                 SummaSchemeStep*             step) {
     if (form->length < 2) {
         snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - expects (%s test body ...)", name, name);
         return summa_make_error(ERROR_MESSAGE);
@@ -2869,17 +3142,21 @@ static SummaSchemeError summa_scheme_when_unless(const char*                  na
         *out = summa_scheme_unspecified();
         return summa_success();
     }
-    return summa_scheme_evaluate_sequence(env, form, 2, out);
+    return summa_scheme_evaluate_sequence_tail(env, form, 2, out, step);
 }
 
-static SummaSchemeError
-summa_scheme_special_when(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
-    return summa_scheme_when_unless("when", true, env, form, out);
+static SummaSchemeError summa_scheme_special_when(const SummaSchemeEnvironment env,
+                                                  const SummaList              form,
+                                                  SummaSchemeValue*            out,
+                                                  SummaSchemeStep*             step) {
+    return summa_scheme_when_unless("when", true, env, form, out, step);
 }
 
-static SummaSchemeError
-summa_scheme_special_unless(const SummaSchemeEnvironment env, const SummaList form, SummaSchemeValue* out) {
-    return summa_scheme_when_unless("unless", false, env, form, out);
+static SummaSchemeError summa_scheme_special_unless(const SummaSchemeEnvironment env,
+                                                    const SummaList              form,
+                                                    SummaSchemeValue*            out,
+                                                    SummaSchemeStep*             step) {
+    return summa_scheme_when_unless("unless", false, env, form, out, step);
 }
 
 typedef struct {
@@ -2920,15 +3197,13 @@ static SummaSchemeSpecialFormFn summa_scheme_special_form_lookup(const char* nam
 
 #pragma endregion Special forms
 
-SummaSchemeError summa_scheme_procedure_dispatch(SummaSchemeEnvironment env,
-                                                 SummaSchemeProcedure   proc,
-                                                 const SummaList        args,
-                                                 SummaSchemeValue*      out) {
-    /* No body means the table owns the behavior. */
-    if (!proc.body) {
-        return summa_scheme_procedure_dispatch_global(proc, args, out);
-    }
-
+/* Checks the arity and builds the call frame, and stops there. The body is the
+ * caller's to run, because a call in tail position runs it in the trampoline
+ * rather than under this function. `*out` receives the only reference. */
+static SummaSchemeError summa_scheme_procedure_frame(const SummaSchemeEnvironment env,
+                                                     const SummaSchemeProcedure   proc,
+                                                     const SummaList              args,
+                                                     SummaSchemeEnvironment*      out) {
     const size_t expected = proc.bindings ? proc.bindings->length : 0;
     if (expected != args->length) {
         snprintf(ERROR_MESSAGE,
@@ -2949,6 +3224,29 @@ SummaSchemeError summa_scheme_procedure_dispatch(SummaSchemeEnvironment env,
         summa_scheme_value_copy(&argument, &args->value[i]);
         summa_scheme_environment_set(
             frame, summa_scheme_binding_make(summa_string_make(proc.bindings->value[i].value->value), argument));
+    }
+
+    *out = frame;
+    return summa_success();
+}
+
+/* Calls a procedure and runs it to a value -- the entry point for a host that
+ * has the arguments already. The evaluator's own calls go through
+ * `summa_scheme_apply`, which stops one step short of this so the trampoline
+ * can take the body over. */
+SummaSchemeError summa_scheme_procedure_dispatch(SummaSchemeEnvironment env,
+                                                 SummaSchemeProcedure   proc,
+                                                 const SummaList        args,
+                                                 SummaSchemeValue*      out) {
+    /* No body means the table owns the behavior. */
+    if (!proc.body) {
+        return summa_scheme_procedure_dispatch_global(proc, args, out);
+    }
+
+    SummaSchemeEnvironment frame = nullptr;
+    const SummaSchemeError built = summa_scheme_procedure_frame(env, proc, args, &frame);
+    if (built.had) {
+        return built;
     }
 
     const SummaSchemeError err = summa_scheme_evaluate_sequence(frame, proc.body, 0, out);

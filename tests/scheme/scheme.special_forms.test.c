@@ -271,11 +271,17 @@ void test_scheme_recursion_terminates() {
     }
 }
 
-/* Delete this the day tail calls are optimized: it pins the stopgap, not the
- * language. */
-void test_scheme_runaway_recursion_is_an_error_not_a_crash() {
+/* The depth guard, which survives proper tail calls rather than being replaced
+ * by them. `(+ 1 (loop))` recurses in an *operand*, so every level has work
+ * left to do and genuinely needs a C frame; SUMMA_SCHEME_MAX_DEPTH is what
+ * turns that into a diagnosable error instead of a segfault.
+ *
+ * Deliberately not `(define (loop) (loop))`, which the trampoline runs as the
+ * correct non-terminating program it is -- a case that would hang rather than
+ * fail. tests/scheme/scheme.tail_calls.test.c covers that side. */
+void test_scheme_runaway_non_tail_recursion_is_an_error_not_a_crash() {
     SCOPED_GLOBAL_ENV(env) {
-        eval_ok(env, LIST(SYM("define"), LIST(SYM("loop")), LIST(SYM("loop"))));
+        eval_ok(env, LIST(SYM("define"), LIST(SYM("loop")), LIST(SYM("+"), INT(1), LIST(SYM("loop")))));
         assert_evaluation_fails(env, LIST(SYM("loop")));
     }
 }
@@ -533,7 +539,7 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_scheme_parameters_shadow_outer_bindings);
 
     SUMMA_TEST_RUN(test_scheme_recursion_terminates);
-    SUMMA_TEST_RUN(test_scheme_runaway_recursion_is_an_error_not_a_crash);
+    SUMMA_TEST_RUN(test_scheme_runaway_non_tail_recursion_is_an_error_not_a_crash);
 
     SUMMA_TEST_RUN(test_scheme_set_mutates_an_existing_binding);
     SUMMA_TEST_RUN(test_scheme_set_reaches_an_enclosing_binding);

@@ -8,23 +8,24 @@ If you mean to solve Project Euler yourself, close this file.
 
 ── What this suite is ────────────────────────────────────────────────────
 
-A specification first, and now half a passing suite. Problems 1, 2, 5, 6 and
-9 are green; the other five still fail, and each fails with the
-interpreter's own message naming what it ran out of, so the list of failures
-IS the list of work remaining. As the gap closes, cases go green without
-anyone editing this file.
+A specification first, and now a passing suite. All ten are green.
 
-One thing stands between here and all green:
+Proper tail calls are what closed it. Every solution below is recursion with
+an accumulator -- how daybreak writes them and how Scheme wants them written
+-- and until the evaluator became a trampoline each iteration cost a C frame,
+so SUMMA_SCHEME_MAX_DEPTH stopped 3, 4, 7, 8 and 10 at roughly a thousand
+iterations. Each problem's comment records the iteration count it needs; none
+of them is a limit any more.
 
-1. Tail calls. Every solution below is recursion with an accumulator, which
-   is how daybreak writes them and how Scheme wants them written -- but
-   `summa_scheme_evaluate` has no tail-call optimization, so each iteration
-   costs a C frame. SUMMA_SCHEME_MAX_DEPTH stops that at roughly 200 levels
-   of nesting. Each problem's comment records the iteration count it needs,
-   and the ones over that budget -- 3, 4, 7, 8 and 10 -- cannot pass until
-   the evaluator stops growing the stack per call. Problem 10 will want a
-   sieve on top of that, to finish in reasonable time rather than merely to
-   finish.
+What is left is not depth but time. The suite runs in about eight minutes,
+and problem 10 is essentially all of it -- roughly 10^8 Scheme-level calls at
+the evaluator's current per-call cost, which is a malloc'd frame, a deep copy
+per argument, a string per binding name and an `strcmp` walk to resolve each
+one. Problem 4 and problem 7 take about seven seconds each; the other seven
+are under a second between them. Those numbers are the measurement any
+per-call optimization should be judged against, which is why problem 10 keeps
+its trial division rather than growing a sieve: a sieve would make the
+program faster and tell us nothing about the interpreter.
 
 The procedures are no longer a blocker: `+ - * = < > <= >= quotient
 remainder modulo zero? not string-length string-ref char->integer` all

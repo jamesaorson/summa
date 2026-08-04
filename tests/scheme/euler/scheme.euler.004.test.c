@@ -13,12 +13,13 @@
  *
  * Differs from daybreak: that version sprintf's the product and walks the
  * characters inward. Reversing the number arithmetically says the same thing
- * without needing strings, and keeps this problem blocked on nothing but
+ * without needing strings, and keeps this problem resting on nothing but
  * arithmetic and depth.
  *
- * Iterations: ~810,000, every pair in 100..999. Needs tail calls. */
+ * Iterations: ~810,000, every pair in 100..999, all of them tail calls.
+ * The slowest of the suites that finish quickly -- around 7 seconds in a
+ * Debug build, and the one to watch if per-call cost ever regresses. */
 void test_scheme_euler_004_largest_palindrome_product() {
-    SUMMA_TEST_TODO("needs tail calls for ~810k iterations");
     assert_euler_answer(EULER_PRELUDE
                         "(define (reverse-number n acc)"
                         "  (if (= n 0) acc (reverse-number (quotient n 10) (+ (* acc 10) (modulo n 10)))))"
