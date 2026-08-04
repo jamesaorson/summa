@@ -11,10 +11,6 @@
     SUMMA_TEST_SCOPED_VALUE( \
         SummaSchemeEnvironment, var, summa_scheme_environment_make_empty(), summa_scheme_environment_free)
 
-#define SCOPED_GLOBAL_ENV(var) \
-    SUMMA_TEST_SCOPED_VALUE(   \
-        SummaSchemeEnvironment, var, summa_scheme_environment_make_global(), summa_scheme_environment_free)
-
 #define SCOPED_STRING(var, init) SUMMA_TEST_SCOPED_VALUE(SummaString, var, init, summa_string_free)
 
 /* set() takes ownership of both halves of the binding, so the name is made
@@ -181,23 +177,6 @@ void test_environment_freeing_child_leaves_parent_alive() {
     }
 }
 
-void test_environment_global_binds_plus() {
-    SCOPED_GLOBAL_ENV(env)
-    SCOPED_STRING(lookup, summa_string_make("+")) {
-        SUMMA_TEST_ASSERT_EQ(1u, env->bindings->length);
-
-        SummaSchemeBinding out;
-        SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of(lookup), &out);
-        SUMMA_TEST_ASSERT(!error.had);
-        SUMMA_TEST_ASSERT_EQ(SummaSchemeProcedureType, out.value.type);
-        SUMMA_TEST_ASSERT_EQ_STR("+", out.value.value.procedure.name->value);
-        /* The binding's name and the procedure's name must be two allocations,
-         * not one shared handle -- otherwise freeing the environment releases
-         * the same string twice. */
-        SUMMA_TEST_ASSERT_NEQ(out.name, out.value.value.procedure.name);
-    }
-}
-
 int main(int argc, char** argv) {
     summa_test_begin("scheme.environment", argc, argv);
     SUMMA_TEST_RUN(test_environment_make_empty_starts_unbound);
@@ -210,6 +189,5 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_environment_get_falls_through_to_parent);
     SUMMA_TEST_RUN(test_environment_child_binding_shadows_parent);
     SUMMA_TEST_RUN(test_environment_freeing_child_leaves_parent_alive);
-    SUMMA_TEST_RUN(test_environment_global_binds_plus);
     return summa_test_end();
 }

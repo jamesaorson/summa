@@ -43,16 +43,19 @@ stop evaluating once the answer is known — which is why neither is a builtin.
 
 ---
 
-## Procedures — still to write
+## Procedures
 
-Only `+` exists. Adding one is a function of type `SummaSchemeBuiltinFn` plus a
-row in `SUMMA_SCHEME_BUILTINS`; the global environment binds a procedure per row
-at startup and dispatch finds it by the same name, so there is nothing else to
-register. `summa_scheme_require_arity`, `summa_scheme_require_numbers`,
+Arithmetic, comparison and the string accessors exist; the list, equality and
+predicate families do not. Adding one is a function of type
+`SummaSchemeBuiltinFn` plus a row in `SUMMA_SCHEME_BUILTINS`; the global
+environment binds a procedure per row at startup and dispatch finds it by the
+same name, so there is nothing else to register. `summa_scheme_require_arity`,
+`summa_scheme_require_min_arity`, `summa_scheme_require_type`,
+`summa_scheme_require_arity_of_type`, `summa_scheme_require_numbers`,
 `summa_scheme_has_floating` and `summa_scheme_number_to_double` are already
 there as the shared argument checking.
 
-### Pairs and lists
+### Pairs and lists — still to write
 
 Unbounded data structure — what makes the language usable rather than merely
 complete.
@@ -66,29 +69,58 @@ correct.
 
 `set-car!` and `set-cdr!` are **not** on this list. See the gotcha below.
 
-### Equality
+### Equality — still to write
 
 `eq?` · `eqv?` · `equal?`
 
 `summa_scheme_value_equals` already backs `equal?`.
 
-### Type predicates
+### Type predicates — still to write
 
 One per arm of `SummaSchemeValueType`.
 
 `boolean?` · `char?` · `number?` · `integer?` · `real?` · `string?` · `symbol?` ·
 `procedure?` · `vector?`
 
-### Arithmetic
+### Arithmetic — implemented
 
-`+` · `-` · `*` · `/` · `=` · `<` · `>` · `<=` · `>=` · `quotient` · `remainder` ·
+`+` · `-` · `*` · `=` · `<` · `>` · `<=` · `>=` · `quotient` · `remainder` ·
 `modulo` · `zero?`
 
-### Booleans
+`+`, `-` and `*` are variadic and split on `summa_scheme_has_floating`: one
+inexact operand makes the result inexact. `(-)` is an error — there is no
+identity to return — while `(+)` is 0 and `(*)` is 1.
+
+The five comparisons chain the R7RS way, so `(< 1 2 3)` is #t, and require two
+operands: a one-operand comparison is vacuously true and almost certainly a
+typo. Two integers are compared as integers rather than through `double`, so
+magnitudes past 2^53 still order.
+
+`quotient`, `remainder` and `modulo` take exactly two *integers*. R7RS admits
+integral floats there, but `SummaSchemeValue` tracks no exactness, so an
+integral float is indistinguishable from one that merely rounded to look
+integral — rejecting is the honest answer until there is a tower to consult.
+`remainder` truncates toward zero and takes the dividend's sign; `modulo` takes
+the divisor's. A zero divisor is an error, and so is `INT64_MIN / -1`, whose
+answer is not representable and which C leaves undefined rather than wrapping.
+
+`/` is deliberately absent. See the gotcha below.
+
+### Booleans — implemented
 
 `not`
 
-### I/O
+### Strings and characters — implemented
+
+`string-length` · `string-ref` · `char->integer`
+
+The three euler problem 8 needs to read a digit out of a string. `string-ref`
+names both the index and the length when the index is out of range, and
+`char->integer` goes through `unsigned char` so a byte past 127 does not come
+back negative. The rest of the string library — `substring`, `string-append`,
+`string->list` — is unwritten.
+
+### I/O — still to write
 
 Not required for completeness; required to tell whether any of the rest works.
 
@@ -192,14 +224,22 @@ the predicate names should not imply a tower that isn't there.
 closures and arity checking. Application from either operator position — a bound
 name (`(f 1)`) or an expression (`((lambda (x) x) 1)`), both routed through
 `summa_scheme_apply`. Deep copy and free, which is what lets values outlive the
-frame that produced them.
+frame that produced them. `summa_scheme_read`, so a program can be written as
+source rather than built as values.
 
-Covered by `tests/scheme/scheme.special_forms.test.c`.
+Sixteen builtins: the arithmetic, comparison, boolean and string sets above.
+Recursion has a numeric base case now, which is what the euler suites were
+waiting on — problems 1, 2, 5, 6 and 9 pass.
 
-**Not done.** Every builtin except `+`, and `summa_scheme_read`.
+Covered by `tests/scheme/scheme.special_forms.test.c` and
+`tests/scheme/scheme.builtins.test.c`.
 
-Without a reader, programs are built as values — see the `LIST`/`SYM`/`INT`
-helpers at the top of the special-forms test, which is currently the only way to
-write one. Without the comparison and list builtins, recursion has no numeric
-base case, so the recursion test uses a boolean stop flag instead of counting
-down. Both are the shape of the gap, not a limit on the evaluator.
+**Not done.** `/`, the pair and list procedures, the equality procedures, the
+type predicates, `display` and `newline`. Tail calls, which is what the five
+remaining euler problems are blocked on — each of them iterates past
+`SUMMA_SCHEME_MAX_DEPTH`.
+
+The list builtins are the larger of the two gaps: without them there is no
+unbounded data structure, so every program here threads its state through
+accumulator arguments. That is the shape of the gap, not a limit on the
+evaluator.

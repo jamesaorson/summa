@@ -1458,9 +1458,7 @@ typedef struct {
     SummaSchemeBuiltinFn fn;
 } SummaSchemeBuiltin;
 
-/* Unused until a fixed-arity builtin lands; `+` is variadic. */
-[[maybe_unused]] static SummaSchemeError
-summa_scheme_require_arity(const char* name, const SummaList args, size_t expected) {
+static SummaSchemeError summa_scheme_require_arity(const char* name, const SummaList args, size_t expected) {
     if (args->length != expected) {
         snprintf(ERROR_MESSAGE,
                  ERROR_MESSAGE_LENGTH,
@@ -1469,6 +1467,92 @@ summa_scheme_require_arity(const char* name, const SummaList args, size_t expect
                  expected,
                  args->length);
         return summa_make_error(ERROR_MESSAGE);
+    }
+    return summa_success();
+}
+
+/* The variadic counterpart. `-` needs one operand to negate, and a chained
+ * comparison needs a pair before there is anything to compare. */
+static SummaSchemeError summa_scheme_require_min_arity(const char* name, const SummaList args, size_t minimum) {
+    if (args->length < minimum) {
+        snprintf(ERROR_MESSAGE,
+                 ERROR_MESSAGE_LENGTH,
+                 "%s - expects at least %zu argument(s), got %zu",
+                 name,
+                 minimum,
+                 args->length);
+        return summa_make_error(ERROR_MESSAGE);
+    }
+    return summa_success();
+}
+
+/* For error messages only -- what a user calling the wrong procedure needs to
+ * read, not a Scheme-level type name. */
+static const char* summa_scheme_type_name(SummaSchemeValueType type) {
+    switch (type) {
+    case SummaSchemeBooleanType: {
+        return "boolean";
+    }
+    case SummaSchemeCharacterType: {
+        return "character";
+    }
+    case SummaSchemeFloatingType: {
+        return "floating";
+    }
+    case SummaSchemeIntegerType: {
+        return "integer";
+    }
+    case SummaSchemeListType: {
+        return "list";
+    }
+    case SummaSchemeProcedureType: {
+        return "procedure";
+    }
+    case SummaSchemeStringType: {
+        return "string";
+    }
+    case SummaSchemeSymbolType: {
+        return "symbol";
+    }
+    case SummaSchemeVectorType: {
+        return "vector";
+    }
+    }
+    return "value";
+}
+
+/* The position is named as well as the type, so a two-argument builtin says
+ * which operand was wrong. One-based, the way a caller counts them. */
+static SummaSchemeError
+summa_scheme_require_type(const char* name, const SummaList args, size_t index, SummaSchemeValueType expected) {
+    if (args->value[index].type != expected) {
+        snprintf(ERROR_MESSAGE,
+                 ERROR_MESSAGE_LENGTH,
+                 "%s - argument %zu must be %s, got %s",
+                 name,
+                 index + 1,
+                 summa_scheme_type_name(expected),
+                 summa_scheme_type_name(args->value[index].type));
+        return summa_make_error(ERROR_MESSAGE);
+    }
+    return summa_success();
+}
+
+/* The common shape for a fixed-arity builtin whose operands are all one type:
+ * count them, then check each. Saves every such builtin repeating both. */
+static SummaSchemeError summa_scheme_require_arity_of_type(const char*          name,
+                                                           const SummaList      args,
+                                                           size_t               expected,
+                                                           SummaSchemeValueType type) {
+    const SummaSchemeError err = summa_scheme_require_arity(name, args, expected);
+    if (err.had) {
+        return err;
+    }
+    for (size_t i = 0; i < expected; i++) {
+        const SummaSchemeError type_err = summa_scheme_require_type(name, args, i, type);
+        if (type_err.had) {
+            return type_err;
+        }
     }
     return summa_success();
 }
@@ -1523,10 +1607,318 @@ static SummaSchemeError summa_scheme_builtin_add(const SummaList args, SummaSche
     return summa_success();
 }
 
+/* One argument negates; two or more fold left. Zero would have no identity to
+ * return -- R7RS makes `(-)` an error, and so does this. */
+static SummaSchemeError summa_scheme_builtin_subtract(const SummaList args, SummaSchemeValue* out) {
+    SummaSchemeError err = summa_scheme_require_min_arity("-", args, 1);
+    if (err.had) {
+        return err;
+    }
+    err = summa_scheme_require_numbers("-", args);
+    if (err.had) {
+        return err;
+    }
+
+    if (summa_scheme_has_floating(args)) {
+        double result = summa_scheme_number_to_double(&args->value[0]);
+        if (args->length == 1) {
+            result = -result;
+        }
+        for (size_t i = 1; i < args->length; i++) {
+            result -= summa_scheme_number_to_double(&args->value[i]);
+        }
+        *out = summa_make_scheme_floating(result);
+    } else {
+        int64_t result = args->value[0].value.integer.value;
+        if (args->length == 1) {
+            result = -result;
+        }
+        for (size_t i = 1; i < args->length; i++) {
+            result -= args->value[i].value.integer.value;
+        }
+        *out = summa_make_scheme_integer(result);
+    }
+    return summa_success();
+}
+
+static SummaSchemeError summa_scheme_builtin_multiply(const SummaList args, SummaSchemeValue* out) {
+    const SummaSchemeError err = summa_scheme_require_numbers("*", args);
+    if (err.had) {
+        return err;
+    }
+
+    if (summa_scheme_has_floating(args)) {
+        double result = 1.0;
+        for (size_t i = 0; i < args->length; i++) {
+            result *= summa_scheme_number_to_double(&args->value[i]);
+        }
+        *out = summa_make_scheme_floating(result);
+    } else {
+        int64_t result = 1;
+        for (size_t i = 0; i < args->length; i++) {
+            result *= args->value[i].value.integer.value;
+        }
+        *out = summa_make_scheme_integer(result);
+    }
+    return summa_success();
+}
+
+/* -1, 0 or 1. Two integers are compared as integers rather than through
+ * `double`, so magnitudes past 2^53 still order correctly. */
+static int summa_scheme_number_compare(const SummaSchemeValue* left, const SummaSchemeValue* right) {
+    if (left->type == SummaSchemeIntegerType && right->type == SummaSchemeIntegerType) {
+        const int64_t a = left->value.integer.value;
+        const int64_t b = right->value.integer.value;
+        return a < b ? -1 : (a > b ? 1 : 0);
+    }
+    const double a = summa_scheme_number_to_double(left);
+    const double b = summa_scheme_number_to_double(right);
+    return a < b ? -1 : (a > b ? 1 : 0);
+}
+
+/* Decides one adjacent pair from its ordering -- the only thing the five
+ * comparisons differ by. */
+typedef bool (*SummaSchemeOrderFn)(int ordering);
+
+static bool summa_scheme_order_equal(int ordering) {
+    return ordering == 0;
+}
+
+static bool summa_scheme_order_less(int ordering) {
+    return ordering < 0;
+}
+
+static bool summa_scheme_order_greater(int ordering) {
+    return ordering > 0;
+}
+
+static bool summa_scheme_order_less_equal(int ordering) {
+    return ordering <= 0;
+}
+
+static bool summa_scheme_order_greater_equal(int ordering) {
+    return ordering >= 0;
+}
+
+/* R7RS chaining: every adjacent pair must hold, so `(< 1 2 3)` is #t. Stops at
+ * the first pair that fails. Two operands minimum -- a one-operand comparison
+ * is vacuously true and almost certainly a mistake. */
+static SummaSchemeError
+summa_scheme_compare_chain(const char* name, const SummaList args, SummaSchemeOrderFn accept, SummaSchemeValue* out) {
+    SummaSchemeError err = summa_scheme_require_min_arity(name, args, 2);
+    if (err.had) {
+        return err;
+    }
+    err = summa_scheme_require_numbers(name, args);
+    if (err.had) {
+        return err;
+    }
+
+    for (size_t i = 1; i < args->length; i++) {
+        if (!accept(summa_scheme_number_compare(&args->value[i - 1], &args->value[i]))) {
+            *out = summa_make_scheme_boolean(false);
+            return summa_success();
+        }
+    }
+    *out = summa_make_scheme_boolean(true);
+    return summa_success();
+}
+
+static SummaSchemeError summa_scheme_builtin_numeric_equal(const SummaList args, SummaSchemeValue* out) {
+    return summa_scheme_compare_chain("=", args, summa_scheme_order_equal, out);
+}
+
+static SummaSchemeError summa_scheme_builtin_less(const SummaList args, SummaSchemeValue* out) {
+    return summa_scheme_compare_chain("<", args, summa_scheme_order_less, out);
+}
+
+static SummaSchemeError summa_scheme_builtin_greater(const SummaList args, SummaSchemeValue* out) {
+    return summa_scheme_compare_chain(">", args, summa_scheme_order_greater, out);
+}
+
+static SummaSchemeError summa_scheme_builtin_less_equal(const SummaList args, SummaSchemeValue* out) {
+    return summa_scheme_compare_chain("<=", args, summa_scheme_order_less_equal, out);
+}
+
+static SummaSchemeError summa_scheme_builtin_greater_equal(const SummaList args, SummaSchemeValue* out) {
+    return summa_scheme_compare_chain(">=", args, summa_scheme_order_greater_equal, out);
+}
+
+/* Shared front end for `quotient`, `remainder` and `modulo`: two integers, a
+ * nonzero divisor, and a representable result.
+ *
+ * R7RS admits integral floats here -- `(modulo 7.0 2)` is 1.0 -- but
+ * SummaSchemeValue tracks no exactness, so an integral float is
+ * indistinguishable from one that merely rounded to look integral. Nothing in
+ * the euler suites wants it, so a float is rejected outright rather than
+ * silently truncated. */
+static SummaSchemeError
+summa_scheme_integer_operands(const char* name, const SummaList args, int64_t* left, int64_t* right) {
+    const SummaSchemeError err = summa_scheme_require_arity_of_type(name, args, 2, SummaSchemeIntegerType);
+    if (err.had) {
+        return err;
+    }
+
+    const int64_t dividend = args->value[0].value.integer.value;
+    const int64_t divisor  = args->value[1].value.integer.value;
+    if (divisor == 0) {
+        snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - division by zero", name);
+        return summa_make_error(ERROR_MESSAGE);
+    }
+    /* INT64_MIN / -1 is +2^63, which does not fit an int64_t. C leaves both
+     * `/` and `%` undefined for it rather than wrapping, and UBSan traps it in
+     * CI -- so it is an error here, not a value. */
+    if (dividend == INT64_MIN && divisor == -1) {
+        snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - result is not representable", name);
+        return summa_make_error(ERROR_MESSAGE);
+    }
+
+    *left  = dividend;
+    *right = divisor;
+    return summa_success();
+}
+
+static SummaSchemeError summa_scheme_builtin_quotient(const SummaList args, SummaSchemeValue* out) {
+    int64_t                left  = 0;
+    int64_t                right = 0;
+    const SummaSchemeError err   = summa_scheme_integer_operands("quotient", args, &left, &right);
+    if (err.had) {
+        return err;
+    }
+    *out = summa_make_scheme_integer(left / right);
+    return summa_success();
+}
+
+/* C's `%` truncates toward zero, which is exactly `remainder`: the sign of the
+ * result follows the dividend. */
+static SummaSchemeError summa_scheme_builtin_remainder(const SummaList args, SummaSchemeValue* out) {
+    int64_t                left  = 0;
+    int64_t                right = 0;
+    const SummaSchemeError err   = summa_scheme_integer_operands("remainder", args, &left, &right);
+    if (err.had) {
+        return err;
+    }
+    *out = summa_make_scheme_integer(left % right);
+    return summa_success();
+}
+
+/* `modulo` takes the sign of the divisor instead, so a remainder that
+ * disagrees with it is pulled one divisor across. The correction cannot
+ * overflow: the remainder is smaller in magnitude than the divisor and points
+ * the other way, so the sum lies strictly between zero and the divisor. */
+static SummaSchemeError summa_scheme_builtin_modulo(const SummaList args, SummaSchemeValue* out) {
+    int64_t                left  = 0;
+    int64_t                right = 0;
+    const SummaSchemeError err   = summa_scheme_integer_operands("modulo", args, &left, &right);
+    if (err.had) {
+        return err;
+    }
+    int64_t result = left % right;
+    if (result != 0 && ((result < 0) != (right < 0))) {
+        result += right;
+    }
+    *out = summa_make_scheme_integer(result);
+    return summa_success();
+}
+
+static SummaSchemeError summa_scheme_builtin_is_zero(const SummaList args, SummaSchemeValue* out) {
+    SummaSchemeError err = summa_scheme_require_arity("zero?", args, 1);
+    if (err.had) {
+        return err;
+    }
+    err = summa_scheme_require_numbers("zero?", args);
+    if (err.had) {
+        return err;
+    }
+
+    const SummaSchemeValue* value = &args->value[0];
+    const bool              zero =
+        value->type == SummaSchemeIntegerType ? value->value.integer.value == 0 : value->value.floating.value == 0.0;
+    *out = summa_make_scheme_boolean(zero);
+    return summa_success();
+}
+
+/* The one place `#f` is singled out: everything else is true, so `not` gives
+ * back #f for it. */
+static SummaSchemeError summa_scheme_builtin_not(const SummaList args, SummaSchemeValue* out) {
+    const SummaSchemeError err = summa_scheme_require_arity("not", args, 1);
+    if (err.had) {
+        return err;
+    }
+    *out = summa_make_scheme_boolean(!summa_scheme_truthy(&args->value[0]));
+    return summa_success();
+}
+
+static SummaSchemeError summa_scheme_builtin_string_length(const SummaList args, SummaSchemeValue* out) {
+    const SummaSchemeError err = summa_scheme_require_arity_of_type("string-length", args, 1, SummaSchemeStringType);
+    if (err.had) {
+        return err;
+    }
+    *out = summa_make_scheme_integer((int64_t)args->value[0].value.string.value->length);
+    return summa_success();
+}
+
+static SummaSchemeError summa_scheme_builtin_string_ref(const SummaList args, SummaSchemeValue* out) {
+    SummaSchemeError err = summa_scheme_require_arity("string-ref", args, 2);
+    if (err.had) {
+        return err;
+    }
+    err = summa_scheme_require_type("string-ref", args, 0, SummaSchemeStringType);
+    if (err.had) {
+        return err;
+    }
+    err = summa_scheme_require_type("string-ref", args, 1, SummaSchemeIntegerType);
+    if (err.had) {
+        return err;
+    }
+
+    const SummaString str   = args->value[0].value.string.value;
+    const int64_t     index = args->value[1].value.integer.value;
+    /* Both bounds in one message: which index was asked for, and what the
+     * string could have answered. */
+    if (index < 0 || (size_t)index >= str->length) {
+        snprintf(ERROR_MESSAGE,
+                 ERROR_MESSAGE_LENGTH,
+                 "string-ref - index %" PRId64 " is out of range for a string of length %zu",
+                 index,
+                 str->length);
+        return summa_make_error(ERROR_MESSAGE);
+    }
+    *out = summa_make_scheme_character(str->value[index]);
+    return summa_success();
+}
+
+static SummaSchemeError summa_scheme_builtin_char_to_integer(const SummaList args, SummaSchemeValue* out) {
+    const SummaSchemeError err =
+        summa_scheme_require_arity_of_type("char->integer", args, 1, SummaSchemeCharacterType);
+    if (err.had) {
+        return err;
+    }
+    /* Through `unsigned char`: plain `char` is signed on most targets, and a
+     * byte past 127 must not come back as a negative code point. */
+    *out = summa_make_scheme_integer((unsigned char)args->value[0].value.character.value);
+    return summa_success();
+}
+
 /* One function plus one row: the global environment binds a procedure per row
  * at startup, and dispatch finds it by name. */
 static const SummaSchemeBuiltin SUMMA_SCHEME_BUILTINS[] = {
     {"+", summa_scheme_builtin_add},
+    {"-", summa_scheme_builtin_subtract},
+    {"*", summa_scheme_builtin_multiply},
+    {"=", summa_scheme_builtin_numeric_equal},
+    {"<", summa_scheme_builtin_less},
+    {">", summa_scheme_builtin_greater},
+    {"<=", summa_scheme_builtin_less_equal},
+    {">=", summa_scheme_builtin_greater_equal},
+    {"quotient", summa_scheme_builtin_quotient},
+    {"remainder", summa_scheme_builtin_remainder},
+    {"modulo", summa_scheme_builtin_modulo},
+    {"zero?", summa_scheme_builtin_is_zero},
+    {"not", summa_scheme_builtin_not},
+    {"string-length", summa_scheme_builtin_string_length},
+    {"string-ref", summa_scheme_builtin_string_ref},
+    {"char->integer", summa_scheme_builtin_char_to_integer},
 };
 
 static size_t summa_scheme_builtin_count(void) {

@@ -13,7 +13,6 @@
  *
  * Iterations: ~33, one per Fibonacci number. Within the depth budget. */
 void test_scheme_euler_002_even_fibonacci_sum() {
-    SUMMA_TEST_TODO("needs the `>`, `=` and `modulo` builtins");
     assert_euler_answer(EULER_PRELUDE "(define (fib-add-evens limit a b acc)"
                                       "  (cond ((> b limit) acc)"
                                       "        ((= 0 (modulo b 2)) (fib-add-evens limit b (+ a b) (+ acc b)))"

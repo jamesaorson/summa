@@ -15,7 +15,7 @@
  * needs tail calls, and will want a sieve or a faster primality test before it
  * finishes in reasonable time. */
 void test_scheme_euler_010_summation_of_primes() {
-    SUMMA_TEST_TODO("needs the `<`, `-`, `*`, `=` and `modulo` builtins, then tail calls for two million iterations");
+    SUMMA_TEST_TODO("needs tail calls for two million iterations");
     assert_euler_answer(EULER_PRELUDE "(define (sum-primes n acc)"
                                       "  (cond ((< n 2) acc)"
                                       "        ((prime? n) (sum-primes (- n 1) (+ acc n)))"
