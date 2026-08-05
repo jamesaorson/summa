@@ -57,6 +57,12 @@
  * so they are reported on stderr and make the run exit non-zero. A clean run
  * says nothing about them, which is what keeps a diff quiet.
  *
+ * One thing is deliberately allowed to outlive a program: the symbol intern
+ * table, which is process-global and permanent by design. `bench_warm_symbols`
+ * reads each case's source through once before the clock starts, so every name
+ * the case mentions is already in the table -- which keeps that tally honest and
+ * keeps the first measured run from being the one that pays for all of them.
+ *
  * ── Reading a run ────────────────────────────────────────────────────────
  *
  * Output is one line per case in a fixed order, so two runs diff to the numbers
@@ -501,6 +507,35 @@ static SummaSchemeError bench_run_program(const SummaSchemeEnvironment env, cons
     return err;
 }
 
+/* Reads the program through once and throws the result away, which puts every
+ * name it mentions into the process-wide intern table. Two reasons, and the
+ * second is the load-bearing one:
+ *
+ * - A name is interned once and reused for the life of the process, so the
+ *   *first* run of a case would otherwise carry allocations no later run makes
+ *   -- a per-call cost that is really a per-process one.
+ * - Those allocations are never released, by design, so they would read as a
+ *   leak in the tally below. The intern table is the one thing here that is
+ *   *supposed* to outlive a program, and this is what keeps the leak check
+ *   able to say so.
+ *
+ * A read error is ignored: the measured run makes the same mistake a moment
+ * later and reports it properly. */
+static void bench_warm_symbols(const char* const program) {
+    const SummaSchemeEnvironment env    = summa_scheme_environment_make_global();
+    const char*                  cursor = program;
+
+    while (*cursor) {
+        SummaSchemeValue form = {};
+        if (summa_scheme_read(env, cursor, &cursor, &form).had) {
+            break;
+        }
+        summa_scheme_value_free(&form);
+    }
+
+    summa_scheme_environment_free(env);
+}
+
 /* One run of one case: a fresh global environment, the program, and the
  * teardown. All three are inside the measurement, since the environment a
  * program leaves behind is part of what it cost. */
@@ -721,6 +756,8 @@ int main(const int argc, char** const argv) {
 
         bench_program_reset(program);
         const int64_t calls = bench_case->build(program, bench_case->iterations * options.scale, bench_case->size);
+
+        bench_warm_symbols(program->text);
 
         BenchResult best = {};
         for (int64_t attempt = 0; attempt < options.repeat; attempt++) {
