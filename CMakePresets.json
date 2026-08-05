@@ -8,6 +8,7 @@
             "binaryDir": "${sourceDir}/build/${presetName}",
             "cacheVariables": {
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "SUMMA_BUILD_BENCHMARKS": "ON",
                 "SUMMA_BUILD_EXAMPLES": "ON",
                 "SUMMA_BUILD_TESTS": "ON"
             }

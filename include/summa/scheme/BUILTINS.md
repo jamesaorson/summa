@@ -280,7 +280,8 @@ correct non-terminating program it always was.
 What is *not* optimized is per-call cost. Every call still mallocs a frame,
 copies each argument into it, and allocates a string per binding name, and
 symbols are compared with `strcmp` rather than interned. Tail calls make a
-long-running program terminate; they do not make it fast.
+long-running program terminate; they do not make it fast. `benchmarks/scheme`
+prices each of those four separately — see [Current state](#current-state).
 
 ### `set-car!` and `set-cdr!` have nothing to mutate
 
@@ -347,8 +348,39 @@ binding name, and finding both the procedure and each parameter by `strcmp` down
 a linked chain of environments. That case is left un-run for exactly that
 reason. Symbol interning, arguments moved rather than copied, and a binding
 lookup that is not a linear scan are the three obvious buys — and all three want
-a measurement first rather than a guess. Walking a list is bounded by memory
-rather than by `SUMMA_SCHEME_MAX_DEPTH` when the walk is written tail
-recursively; written the other way — `(cons (f (car l)) (map f (cdr l)))` — it
-still costs a C frame per element, and always will, because it has work left to
-do after the call.
+a measurement first rather than a guess.
+
+That measurement exists now. `benchmarks/scheme` is a set of programs written to
+isolate one cost each, printing wall time, allocations and bytes per call; it is
+built by the ordinary build and run by hand (`make benchmark`), never by
+`ctest`, because a benchmark asserts nothing and a CI run should not pay for
+one. Every case comes in a pair or a series, since the reading that travels
+between machines is the *ratio* between two of them. What it says about the
+evaluator as it stands, Release, on an M-series Mac:
+
+| Reading                                        | Baseline                       |
+| ---------------------------------------------- | ------------------------------ |
+| a user procedure call                          | ~1.2 µs, 15 allocations, 2 KB  |
+| a call binding nothing, over the loop it is in | +328 ns, +5 allocations, 832 B |
+| each argument bound                            | +136 ns, +2 allocations        |
+| 32 lexical frames rather than 1                | +50% per call                  |
+| the last of 256 globals rather than of 8       | +113% per call                 |
+| a 128-element list argument rather than 1      | 3.3× the time, 9.5× the bytes  |
+
+Two of those say something the list of three did not. **Arguments are copied
+twice per call, not once** — `summa_scheme_procedure_frame` makes one, and
+`summa_scheme_evaluate`'s symbol case makes the other, since a variable
+reference hands back a copy of the bound value. Moving arguments into the frame
+removes one of the two; the per-call cost of a list argument stays linear in its
+length until the other goes as well. And **most of what a frame costs is
+capacity nobody asked for**: of the 832 bytes a call binding nothing allocates,
+704 are element storage at `SUMMA_ARRAY_DEFAULT_CAPACITY` — eight
+`SummaSchemeValue` slots of argument list and eight `SummaSchemeBinding` slots
+of frame bindings, for a call with no arguments and no bindings. Sizing those
+two arrays to the arity the evaluator already knows is a fourth buy, cheaper
+than any of the three, and the benchmark found it rather than the list did.
+
+Walking a list is bounded by memory rather than by `SUMMA_SCHEME_MAX_DEPTH` when
+the walk is written tail recursively; written the other way —
+`(cons (f (car l)) (map f (cdr l)))` — it still costs a C frame per element, and
+always will, because it has work left to do after the call.

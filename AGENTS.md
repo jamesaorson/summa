@@ -42,6 +42,7 @@ Two distinct kinds of output live here:
 include/summa/          # Public headers — one .h per library
 tests/                  # Test files — one .test.c per library
 examples/               # Usage examples — one subdir per library
+benchmarks/             # Benchmarks — built by the normal build, never run by ctest
 docs/                   # Reference docs (e.g. r7rs-small.pdf)
 git/hooks/              # Dev hooks (install via make setup/hooks)
 <app>/                  # Application subdirectories (scheme/, engine/, …)
@@ -58,6 +59,7 @@ make build       # cmake --build --preset debug
 make test        # build + ctest --preset debug
 make format      # clang-format -i all .h/.c files
 make check       # clang-format --dry-run --Werror (runs in pre-commit hook)
+make benchmark   # build + run benchmarks/scheme (add CMAKE_BUILD_TYPE=Release for real numbers)
 ```
 
 CI matrices over `Debug` and `Release`. Debug runs ASan + UBSan. Always keep both
@@ -231,6 +233,20 @@ Guidelines:
 - It produces a binary (executable) or a library target, not a header.
 - Add a `SUMMA_BUILD_<APP>` option in the root `CMakeLists.txt` following the
   existing pattern for `SUMMA_BUILD_TESTS` and `SUMMA_BUILD_EXAMPLES`.
+
+---
+
+## Adding a Benchmark
+
+Add `<name>` to the `ALL_BENCHMARKS` list in `benchmarks/CMakeLists.txt` and
+write `benchmarks/<name>/main.c`. It builds like an example — strict flags, no
+sanitizers — and is deliberately **not** registered with CTest, so `make test`
+never pays for it while a benchmark that stopped compiling still fails the
+build. `make benchmark` runs it.
+
+A benchmark prints numbers; it asserts nothing. Keep the output one line per
+case in a fixed order so two runs diff to what moved, and give it a `--help`
+like any other CLI here.
 
 ---
 
