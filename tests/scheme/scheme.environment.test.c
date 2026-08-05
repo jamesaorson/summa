@@ -42,8 +42,7 @@ static SummaSchemeError evaluate_source(const SummaSchemeEnvironment env, const 
 void test_environment_make_empty_starts_unbound() {
     SCOPED_ENV(env) {
         SUMMA_TEST_ASSERT_NOT_NULL(env);
-        SUMMA_TEST_ASSERT_NOT_NULL(env->bindings);
-        SUMMA_TEST_ASSERT_EQ(0u, env->bindings->length);
+        SUMMA_TEST_ASSERT_EQ(0u, env->bindings.length);
         SUMMA_TEST_ASSERT_NULL(env->parent);
     }
 }
@@ -59,14 +58,14 @@ void test_environment_survives_the_block_that_made_it() {
         bind_integer(env, "x", 1);
     }
     SUMMA_TEST_ASSERT_NOT_NULL(env);
-    SUMMA_TEST_ASSERT_EQ(1u, env->bindings->length);
+    SUMMA_TEST_ASSERT_EQ(1u, env->bindings.length);
     summa_scheme_environment_free(env);
 }
 
 void test_environment_set_then_get() {
     SCOPED_ENV(env) {
         bind_integer(env, "x", 42);
-        SUMMA_TEST_ASSERT_EQ(1u, env->bindings->length);
+        SUMMA_TEST_ASSERT_EQ(1u, env->bindings.length);
 
         SummaSchemeBinding out   = {};
         SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of("x"), &out);
@@ -83,7 +82,7 @@ void test_environment_set_existing_name_rebinds_in_place() {
         /* Rebinding replaces rather than appends. The by-value copy this used
          * to make meant the second set updated a temporary and the environment
          * kept reporting 1. */
-        SUMMA_TEST_ASSERT_EQ(1u, env->bindings->length);
+        SUMMA_TEST_ASSERT_EQ(1u, env->bindings.length);
 
         SummaSchemeBinding out   = {};
         SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of("x"), &out);
@@ -101,7 +100,7 @@ void test_environment_rebinding_releases_the_previous_value() {
         summa_scheme_environment_set(
             env, summa_scheme_binding_make(summa_scheme_symbol_intern("s"), summa_make_scheme_string("second")));
 
-        SUMMA_TEST_ASSERT_EQ(1u, env->bindings->length);
+        SUMMA_TEST_ASSERT_EQ(1u, env->bindings.length);
 
         SummaSchemeBinding out   = {};
         SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of("s"), &out);
@@ -114,7 +113,7 @@ void test_environment_distinct_names_both_bound() {
     SCOPED_ENV(env) {
         bind_integer(env, "x", 1);
         bind_integer(env, "y", 2);
-        SUMMA_TEST_ASSERT_EQ(2u, env->bindings->length);
+        SUMMA_TEST_ASSERT_EQ(2u, env->bindings.length);
 
         SummaSchemeBinding out = {};
         SUMMA_TEST_ASSERT(!summa_scheme_environment_get(env, symbol_of("x"), &out).had);
@@ -191,8 +190,8 @@ void test_environment_make_empty_allocates_no_binding_storage() {
      * to be eight SummaSchemeBinding slots -- 384 bytes -- for every
      * environment ever made, whether or not anything went in it. */
     SCOPED_ENV(env) {
-        SUMMA_TEST_ASSERT_EQ(0u, env->bindings->capacity);
-        SUMMA_TEST_ASSERT_NULL(env->bindings->value);
+        SUMMA_TEST_ASSERT_EQ(0u, env->bindings.capacity);
+        SUMMA_TEST_ASSERT_NULL(env->bindings.value);
     }
 }
 
@@ -201,14 +200,14 @@ void test_environment_make_with_capacity_reserves_exactly() {
                             env,
                             summa_scheme_environment_make_with_capacity(nullptr, 3),
                             summa_scheme_environment_free) {
-        SUMMA_TEST_ASSERT_EQ(3u, env->bindings->capacity);
-        SUMMA_TEST_ASSERT_EQ(0u, env->bindings->length);
+        SUMMA_TEST_ASSERT_EQ(3u, env->bindings.capacity);
+        SUMMA_TEST_ASSERT_EQ(0u, env->bindings.length);
         bind_integer(env, "a", 1);
         bind_integer(env, "b", 2);
         bind_integer(env, "c", 3);
         /* Three bindings into three slots: no growth, no slack. */
-        SUMMA_TEST_ASSERT_EQ(3u, env->bindings->capacity);
-        SUMMA_TEST_ASSERT_EQ(3u, env->bindings->length);
+        SUMMA_TEST_ASSERT_EQ(3u, env->bindings.capacity);
+        SUMMA_TEST_ASSERT_EQ(3u, env->bindings.length);
     }
 }
 
@@ -224,8 +223,8 @@ void test_environment_grows_past_the_capacity_it_was_given() {
             snprintf(name, sizeof(name), "v%d", i);
             bind_integer(env, name, i);
         }
-        SUMMA_TEST_ASSERT_EQ(12u, env->bindings->length);
-        SUMMA_TEST_ASSERT(env->bindings->capacity >= 12u);
+        SUMMA_TEST_ASSERT_EQ(12u, env->bindings.length);
+        SUMMA_TEST_ASSERT(env->bindings.capacity >= 12u);
         for (int i = 0; i < 12; i++) {
             snprintf(name, sizeof(name), "v%d", i);
             SummaSchemeBinding out = {};
@@ -238,8 +237,8 @@ void test_environment_grows_past_the_capacity_it_was_given() {
 void test_environment_grows_from_zero_capacity() {
     SCOPED_ENV(env) {
         bind_integer(env, "x", 5);
-        SUMMA_TEST_ASSERT_EQ(1u, env->bindings->length);
-        SUMMA_TEST_ASSERT(env->bindings->capacity >= 1u);
+        SUMMA_TEST_ASSERT_EQ(1u, env->bindings.length);
+        SUMMA_TEST_ASSERT(env->bindings.capacity >= 1u);
         SummaSchemeBinding out = {};
         SUMMA_TEST_ASSERT(!summa_scheme_environment_get(env, symbol_of("x"), &out).had);
         SUMMA_TEST_ASSERT_EQ(5, out.value.value.integer.value);
@@ -252,9 +251,9 @@ void test_environment_reserve_only_grows() {
                             summa_scheme_environment_make_with_capacity(nullptr, 4),
                             summa_scheme_environment_free) {
         summa_scheme_environment_reserve(env, 1);
-        SUMMA_TEST_ASSERT_EQ(4u, env->bindings->capacity);
+        SUMMA_TEST_ASSERT_EQ(4u, env->bindings.capacity);
         summa_scheme_environment_reserve(env, 9);
-        SUMMA_TEST_ASSERT_EQ(9u, env->bindings->capacity);
+        SUMMA_TEST_ASSERT_EQ(9u, env->bindings.capacity);
     }
 }
 
@@ -263,7 +262,7 @@ void test_environment_global_frame_is_sized_to_the_builtins() {
         SummaSchemeEnvironment, env, summa_scheme_environment_make_global(), summa_scheme_environment_free) {
         /* Every builtin is bound, and nothing was doubled past them on the way
          * -- the global frame is filled by a loop that knows its own length. */
-        SUMMA_TEST_ASSERT_EQ(env->bindings->length, env->bindings->capacity);
+        SUMMA_TEST_ASSERT_EQ(env->bindings.length, env->bindings.capacity);
     }
 }
 
@@ -280,8 +279,8 @@ void test_environment_call_frame_is_sized_to_the_arity() {
             const SummaSchemeEnvironment frame = closure.value.procedure.closure;
             SUMMA_TEST_ASSERT_NOT_NULL(frame);
             if (frame) {
-                SUMMA_TEST_ASSERT_EQ(2u, frame->bindings->length);
-                SUMMA_TEST_ASSERT_EQ(2u, frame->bindings->capacity);
+                SUMMA_TEST_ASSERT_EQ(2u, frame->bindings.length);
+                SUMMA_TEST_ASSERT_EQ(2u, frame->bindings.capacity);
             }
         }
         summa_scheme_value_free(&closure);
@@ -298,8 +297,8 @@ void test_environment_nullary_call_frame_holds_no_binding_storage() {
             const SummaSchemeEnvironment frame = closure.value.procedure.closure;
             SUMMA_TEST_ASSERT_NOT_NULL(frame);
             if (frame) {
-                SUMMA_TEST_ASSERT_EQ(0u, frame->bindings->capacity);
-                SUMMA_TEST_ASSERT_NULL(frame->bindings->value);
+                SUMMA_TEST_ASSERT_EQ(0u, frame->bindings.capacity);
+                SUMMA_TEST_ASSERT_NULL(frame->bindings.value);
             }
         }
         summa_scheme_value_free(&closure);
@@ -320,8 +319,8 @@ void test_environment_call_frame_grows_for_an_internal_define() {
             const SummaSchemeEnvironment frame = closure.value.procedure.closure;
             SUMMA_TEST_ASSERT_NOT_NULL(frame);
             if (frame) {
-                SUMMA_TEST_ASSERT_EQ(2u, frame->bindings->length);
-                SUMMA_TEST_ASSERT(frame->bindings->capacity >= 2u);
+                SUMMA_TEST_ASSERT_EQ(2u, frame->bindings.length);
+                SUMMA_TEST_ASSERT(frame->bindings.capacity >= 2u);
                 SummaSchemeBinding out = {};
                 SUMMA_TEST_ASSERT(!summa_scheme_environment_get(frame, symbol_of("b"), &out).had);
                 SUMMA_TEST_ASSERT_EQ(7, out.value.value.integer.value);
@@ -341,8 +340,8 @@ void test_environment_let_frame_is_sized_to_its_clauses() {
             const SummaSchemeEnvironment frame = closure.value.procedure.closure;
             SUMMA_TEST_ASSERT_NOT_NULL(frame);
             if (frame) {
-                SUMMA_TEST_ASSERT_EQ(3u, frame->bindings->length);
-                SUMMA_TEST_ASSERT_EQ(3u, frame->bindings->capacity);
+                SUMMA_TEST_ASSERT_EQ(3u, frame->bindings.length);
+                SUMMA_TEST_ASSERT_EQ(3u, frame->bindings.capacity);
             }
         }
         summa_scheme_value_free(&closure);
@@ -362,8 +361,8 @@ void test_environment_wide_call_frame_costs_no_doubling() {
             const SummaSchemeEnvironment frame = closure.value.procedure.closure;
             SUMMA_TEST_ASSERT_NOT_NULL(frame);
             if (frame) {
-                SUMMA_TEST_ASSERT_EQ(10u, frame->bindings->length);
-                SUMMA_TEST_ASSERT_EQ(10u, frame->bindings->capacity);
+                SUMMA_TEST_ASSERT_EQ(10u, frame->bindings.length);
+                SUMMA_TEST_ASSERT_EQ(10u, frame->bindings.capacity);
             }
         }
         summa_scheme_value_free(&closure);

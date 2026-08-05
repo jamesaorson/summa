@@ -99,6 +99,63 @@ void test_array_make_with_exact_capacity_still_grows_past_it() {
     }
 }
 
+/* `init`/`dispose` are `make`/`free` for a header the caller already has, so
+ * these cases deliberately use a stack header and never call `summa_array_free`
+ * on it -- which is the whole distinction being pinned. */
+void test_array_init_with_capacity_uses_the_callers_header() {
+    SummaArray_t array;
+    summa_array_init_with_capacity(&array, sizeof(int), 3);
+    SUMMA_TEST_ASSERT_EQ(0u, array.length);
+    SUMMA_TEST_ASSERT_EQ(3u, array.capacity);
+    SUMMA_TEST_ASSERT_EQ(sizeof(int), array.element_size);
+    SUMMA_TEST_ASSERT_NOT_NULL(array.elements);
+    summa_array_dispose(&array);
+}
+
+void test_array_init_with_zero_capacity_allocates_nothing() {
+    SummaArray_t array;
+    summa_array_init_with_capacity(&array, sizeof(int), 0);
+    SUMMA_TEST_ASSERT_NULL(array.elements);
+    summa_array_dispose(&array);
+}
+
+void test_array_init_then_grow_behaves_like_any_other_array() {
+    /* The point: nothing downstream can tell where the header came from.
+     * `push` reallocs the element storage exactly as it always did. */
+    SummaArray_t array;
+    summa_array_init_with_capacity(&array, sizeof(int), 2);
+    for (int i = 0; i < 20; i++) {
+        summa_array_push(&array, &i);
+    }
+    SUMMA_TEST_ASSERT_EQ(20u, array.length);
+    SUMMA_TEST_ASSERT(array.capacity >= 20u);
+    const int* out = (const int*)array.elements;
+    for (int i = 0; i < 20; i++) {
+        SUMMA_TEST_ASSERT_EQ(i, out[i]);
+    }
+    summa_array_dispose(&array);
+}
+
+void test_array_dispose_leaves_an_empty_array_behind() {
+    /* Emptied rather than merely freed, so a header outliving its contents
+     * reads as a zero-length array instead of a dangling pointer. An owner
+     * being torn down around it can go on enumerating it safely. */
+    int          vals[3] = {1, 2, 3};
+    SummaArray_t array;
+    summa_array_init_with_capacity(&array, sizeof(int), 3);
+    for (int i = 0; i < 3; i++) {
+        summa_array_push(&array, &vals[i]);
+    }
+    summa_array_dispose(&array);
+    SUMMA_TEST_ASSERT_NULL(array.elements);
+    SUMMA_TEST_ASSERT_EQ(0u, array.length);
+    SUMMA_TEST_ASSERT_EQ(0u, array.capacity);
+    /* And still usable: capacity 0 is where push already starts. */
+    summa_array_push(&array, &vals[0]);
+    SUMMA_TEST_ASSERT_EQ(1u, array.length);
+    summa_array_dispose(&array);
+}
+
 void test_array_reserve_grows_from_zero_capacity() {
     SCOPED_ARRAY(array, summa_array_make_with_capacity(sizeof(int), 0)) {
         summa_array_reserve(array, 5);
@@ -430,6 +487,10 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_array_make_with_zero_capacity_allocates_no_elements);
     SUMMA_TEST_RUN(test_array_make_with_zero_capacity_still_grows);
     SUMMA_TEST_RUN(test_array_make_with_exact_capacity_still_grows_past_it);
+    SUMMA_TEST_RUN(test_array_init_with_capacity_uses_the_callers_header);
+    SUMMA_TEST_RUN(test_array_init_with_zero_capacity_allocates_nothing);
+    SUMMA_TEST_RUN(test_array_init_then_grow_behaves_like_any_other_array);
+    SUMMA_TEST_RUN(test_array_dispose_leaves_an_empty_array_behind);
     SUMMA_TEST_RUN(test_array_reserve_grows_from_zero_capacity);
     SUMMA_TEST_RUN(test_array_reserve_keeps_existing_elements);
     SUMMA_TEST_RUN(test_array_reserve_never_shrinks);
