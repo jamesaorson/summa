@@ -1525,12 +1525,18 @@ static SummaSchemeError summa_scheme_print_styled(const SummaSchemeValue value, 
 }
 
 /* summa_list_copy moves elements as raw bytes, leaving the copy sharing every
- * handle inside them. These walk instead. */
+ * handle inside them. These walk instead.
+ *
+ * The length is known before the first element is copied, so the destination is
+ * one exact allocation. Built from `make_empty` it was five reallocs and 320
+ * bytes of slack for a 128-element list -- the same over-allocation
+ * `summa_scheme_environment_make_with_capacity` stopped paying for a frame, on
+ * the one remaining copy whose cost is O(the list). */
 static SummaList summa_scheme_list_copy_deep(const SummaList src) {
     if (!src) {
         return nullptr;
     }
-    SummaList dest = summa_list_make_empty();
+    SummaList dest = summa_list_make_with_capacity(src->length);
     for (size_t i = 0; i < src->length; i++) {
         SummaSchemeValue element;
         summa_scheme_value_copy(&element, &src->value[i]);
