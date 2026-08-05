@@ -397,8 +397,10 @@ problem 10 is where it shows: roughly 10^8 Scheme-level calls, each one
 mallocing a frame and deep copying its arguments into it, and finding both the
 procedure and each parameter by walking a linked chain of environments. That
 case is left un-run for exactly that reason. Arguments moved rather than copied
-and a binding lookup that is not a linear scan are what is left of the three
-obvious buys — and both want a measurement first rather than a guess.
+is what is left of the three obvious buys — and it wants a measurement first
+rather than a guess. The third, a binding lookup that is not a linear scan, has
+had its measurement now, and the measurement said no; see
+[The binding lookup is still a scan](#the-binding-lookup-is-still-a-scan-and-the-measurement-is-why).
 
 That measurement exists. `benchmarks/scheme` is a set of programs written to
 isolate one cost each, printing wall time, allocations and bytes per call; it is
@@ -423,7 +425,7 @@ Two rows want reading carefully.
 The 128-element case's *ratios* keep getting worse while its absolute cost keeps
 falling, and both times for the same reason: what interning removed, and what
 right-sizing removed, was **fixed** per-call cost. What is left in that case is
-the O(length) copy, which is exactly what the next two buys are about.
+the O(length) copy, which is exactly what the one remaining buy is about.
 
 And an argument now costs 88 bytes to bind where a moment ago it cost nothing.
 Nothing got worse — 88 is 48 bytes of `SummaSchemeBinding` plus 40 of
@@ -431,6 +433,11 @@ Nothing got worse — 88 is 48 bytes of `SummaSchemeBinding` plus 40 of
 be prepaid out of eight slots the call never asked for, so the third argument
 looked free while the first had already been charged 832 bytes for all eight.
 The cost is the same cost, now visible and now proportional.
+
+The two lookup rows are the ones that stayed still, and they have since been
+attacked and held. Hashing the frame buys the second row and costs every other
+case more than it is worth, and nothing about hashing touches the first — see
+[The binding lookup is still a scan](#the-binding-lookup-is-still-a-scan-and-the-measurement-is-why).
 
 One of those readings says something the original list of three did not.
 **Arguments are copied twice per call, not once** —
@@ -484,3 +491,99 @@ Walking a list is bounded by memory rather than by `SUMMA_SCHEME_MAX_DEPTH` when
 the walk is written tail recursively; written the other way —
 `(cons (f (car l)) (map f (cdr l)))` — it still costs a C frame per element, and
 always will, because it has work left to do after the call.
+
+### The binding lookup is still a scan, and the measurement is why
+
+`summa_scheme_environment_get_owner` finds a binding by scanning a frame, then
+walking to the parent and scanning again. That was the third of the three buys,
+and it was written up as the largest of them: the last of 256 globals cost
+**+113%** per call over the last of 8.
+
+Interning took two thirds of that away. The +113% was mostly `strcmp`, and once
+a name was a pointer the same reading was **+41%**. What survives is the walk
+itself, and it is real — but it is smaller than the issue was written around,
+and small enough that what a hash table costs to consult started to matter as
+much as what it saves.
+
+So it was built and measured rather than argued about. An open-addressed index
+over the frame's existing bindings array, keyed on the djb2 hash each interned
+name already carries, built only for a frame past a size threshold, and sized to
+the frame at the moment the frame is made. It works, it is correct under every
+test written for it, and it costs the frame no bytes at all — the index pointer
+fits in the padding freed by narrowing the collector's `trial_count`. **It is
+not here**, because on the one measurement that matters it loses.
+
+Release, min of thirty measured runs per binary, the binaries alternated,
+because a single best-of-three cannot separate a 3% effect from this machine's
+drift. Homebrew GCC 13.4 on an M-series Mac, with Apple clang alongside it
+because the first result needed a second opinion:
+
+| case                   | GCC before | GCC indexed |      Δ | clang before | clang indexed |      Δ |
+| ---------------------- | ---------: | ----------: | -----: | -----------: | ------------: | -----: |
+| `call/tail-loop`       |      617.3 |       668.2 |  +8.2% |        641.4 |         668.6 |  +4.2% |
+| `call/nullary`         |      375.6 |       410.6 |  +9.3% |        377.4 |         393.8 |  +4.3% |
+| `call/ternary`         |      468.8 |       508.8 |  +8.5% |        470.3 |         496.8 |  +5.6% |
+| `args/list-thread-1`   |     1010.6 |      1094.8 |  +8.3% |       1028.2 |        1060.7 |  +3.2% |
+| `args/list-thread-16`  |     1541.1 |      1640.3 |  +6.4% |       1796.1 |        1840.9 |  +2.5% |
+| `args/list-thread-128` |     5153.0 |      5275.5 |  +2.4% |       6680.0 |        6739.9 |  +0.9% |
+| `args/list-walk-32`    |     2074.2 |      2126.7 |  +2.5% |       2427.5 |        2459.0 |  +1.3% |
+| `args/list-walk-256`   |     8128.2 |      8219.3 |  +1.1% |      10525.4 |       10613.7 |  +0.8% |
+| `lookup/chain-1`       |      630.4 |       657.4 |  +4.3% |        634.1 |         675.7 |  +6.6% |
+| `lookup/chain-32`      |      898.9 |       924.1 |  +2.8% |        804.8 |         823.6 |  +2.3% |
+| `lookup/globals-8`     |      647.1 |       682.5 |  +5.5% |        645.2 |         665.1 |  +3.1% |
+| `lookup/globals-256`   |      903.6 |   **691.8** | −23.4% |        916.9 |     **678.7** | −26.0% |
+| `symbols/wide-frame`   |      961.9 |      1013.7 |  +5.4% |        993.0 |        1042.1 |  +4.9% |
+
+Bytes per call and allocations per call are identical everywhere, to two decimal
+places, on both compilers. Nothing here is the allocator.
+
+**Twelve cases get worse and one gets better.** The one that gets better is the
+one the index was written for, and it gets 25% better, which is a real win over a
+real cost. It is not enough. A program has to have hundreds of top-level
+definitions *and* name a late one from a hot loop before the index has anything
+to do; the euler suites reach a few dozen names and stay there, so every one of
+them would pay the 3–5% and collect nothing. Euler 10 is 10^8 calls against a
+global frame of about thirty bindings — precisely the shape that loses.
+
+Three things the measurement said that the issue did not, and they are the part
+worth keeping:
+
+**Asking each frame whether it is indexed costs more than scanning it.** The
+first version tested `scope->index` inside the chain walk, which is the obvious
+place. That test — one predictable branch, per frame, per reference — cost
+**7–13%** of every case. Confining the index to *root* frames, so the chain walk
+is untouched and the test is paid once per lookup at the end of it, brought that
+back to the 3–5% above. A frame's lookup is a few pointer compares, and there is
+not room in it for a decision.
+
+**Half of what GCC charged was the shape of the code, not the work in it.** A
+control build — the *baseline* source, with `get_owner`'s one chain loop written
+as "the chain, then the root", the same scan in the same order returning the same
+answer, no index and no new field — costs +5 to +7% under GCC 13.4 and **nothing
+at all** under clang, which tracks the baseline to within 0.4% on every case.
+That is worth knowing before the next person reads a five-percent regression in
+this evaluator as a fact about the evaluator. It joins the allocator finding from
+[A frame is the size of its call](#a-frame-is-the-size-of-its-call): at this
+scale the toolchain is a term in the measurement, and a control build is how you
+find out which term.
+
+**The chain is not the frame, and hashing cannot touch the chain.** Thirty-two
+`let` frames of one binding each cost +42% per call over one frame, and every one
+of those frames is searched in a single comparison. There is nothing in them to
+hash. What would fix that reading is resolving a reference to a `(depth,
+position)` pair when the body is first seen, so a lookup is two array indexes and
+no search at all — lexical addressing, which is a different change, larger than
+this one, and the only one of the two that touches `lookup/chain-32`.
+
+One footnote on the in-repo candidate, since the issue named it.
+`summa/hash_map/hash_map.h` is not usable here, and not for the reason
+[A name is a pointer](#a-name-is-a-pointer-and-the-table-that-makes-it-one)
+gives about the intern table. It is worse: `summa_hash_map_get` finds its key
+through `summa_array_index_of`, which is a **linear scan** over the stored hash
+codes. `SummaHashMap` is an association list keyed by hash, so it would have been
+slower than the scan it replaced as well as wrong on a collision.
+
+The implementation is not lost — it is one commit back on the branch that
+measured it, complete and green, for whoever wants to resurrect it against a
+different benchmark or a different target. What it needs to become worth landing
+is a case that looks like a real program.
