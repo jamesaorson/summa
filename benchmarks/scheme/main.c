@@ -258,9 +258,10 @@ bench_build_ternary(BenchProgram* const program, const int64_t iterations, [[may
 /* ── args/… : what copying an argument costs ───────────────────────────── */
 
 /* The same list handed to the same parameter every iteration, never taken
- * apart. Nothing about the program is O(length) -- the evaluator's copies are.
- * Two of them per iteration, in fact: evaluating the symbol `xs` copies the
- * bound list, and binding it into the frame copies it again. */
+ * apart. Nothing about the program is O(length), and since #40 nothing the
+ * evaluator does to run it is either: the argument is moved into the frame and
+ * the reference that produced it is a counter increment. This series is what
+ * says so -- ns/call should be flat across the three sizes, and is. */
 static int64_t bench_build_list_thread(BenchProgram* const program, const int64_t iterations, const int64_t size) {
     bench_append_list_definition(program, "xs", size);
     bench_program_append(program,
@@ -272,9 +273,14 @@ static int64_t bench_build_list_thread(BenchProgram* const program, const int64_
 
 /* A list walked to its end, `iterations` times over. The walk is written the
  * way Scheme wants it written -- tail recursive, one element per call -- so
- * nothing here is quadratic except the copying. Doubling `size` while halving
- * `iterations` keeps the call count fixed, which is what makes the two
- * list-walk lines directly comparable. */
+ * nothing here is quadratic except what `cdr` does. Doubling `size` while
+ * halving `iterations` keeps the call count fixed, which is what makes the two
+ * list-walk lines directly comparable.
+ *
+ * Unlike list-thread this one cannot go flat, and the reason is the language
+ * rather than the evaluator: `cdr` builds a new list of length n-1, so walking
+ * a list of n copies n(n-1)/2 elements however cheap a reference is. Cons cells
+ * are what would fix it. */
 static int64_t bench_build_list_walk(BenchProgram* const program, const int64_t iterations, const int64_t size) {
     bench_append_list_definition(program, "xs", size);
     bench_program_append(program,

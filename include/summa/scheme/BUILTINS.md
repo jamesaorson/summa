@@ -65,8 +65,9 @@ complete.
 
 All four constructors copy: `summa_scheme_apply` releases the argument list the
 instant dispatch returns, so anything handed back still pointing into it is
-freed memory. `summa_scheme_value_copy` is deep, which is what makes that
-correct.
+freed memory. `summa_scheme_value_copy` takes a reference, which is what makes
+that correct — and is why a builtin building a result out of its arguments still
+has to go through it rather than aliasing the list.
 
 `cons` takes a list as its second argument or errors, and the message names why:
 `(cons 1 2)` is an improper pair, which a dynamic array has no way to be.
@@ -77,8 +78,10 @@ the old one, so a list head nests — `(cons '(1) '(2))` is `((1) 2)`, not
 
 `car` and `cdr` share one checker: one operand, a list, and not the empty one.
 `(car '())` is an error, but `(cdr '(1))` is `()` — an exhausted tail is the
-value a recursion stops on, not a mistake. `cdr` copies, so no two values ever
-observe the same tail.
+value a recursion stops on, not a mistake. `cdr` builds a new list, so no two
+values ever observe the same tail — which is now the load-bearing half of why
+sharing a payload is safe. See
+[`set-car!` and `set-cdr!` have nothing to mutate](#set-car-and-set-cdr-have-nothing-to-mutate).
 
 `(list)` is `()`. `null?` is true for the empty list alone — `#()` is an empty
 *vector*, a distinct type, and is not null — and `pair?` is its complement over
@@ -235,6 +238,49 @@ code in `scheme.h`. Three things worth knowing about it here:
 specification refcounting has to meet, and the cycle cases are the regression
 guard on what it costs.
 
+#### What a shared payload costs the collector
+
+Counted list payloads put "one traversal" under a pressure the rule above did
+not anticipate, and the shape of the pressure is worth stating precisely.
+
+A list holds **one** reference to the closure of a procedure inside it, however
+many values name that list. Two environments binding the same list would each
+enumerate that one reference, so step 2 of trial deletion would subtract two for
+a count of one — and a trial count driven below the truth condemns environments
+that are still alive. That is edge-set drift reached by a second route, and its
+failure mode is corruption rather than a leak.
+
+The rule that closes it is one line: **descend into a payload only when this is
+its sole handle.** A payload with one handle belongs to whoever is enumerating,
+so counting its references once is exact. A payload with more belongs to nobody
+in particular, so the traversal stops at it, and the environments it points at
+keep the references it holds — they then read as held-from-outside, which is the
+conservative answer and the safe direction to be wrong in. The same line keeps
+teardown honest: nulling a closure slot inside a payload somebody else still
+holds would take that procedure's captured environment away from them.
+
+The cost is a cycle that runs through a **shared** payload — a list bound under
+two names, holding a procedure whose closure is an environment in that cycle.
+Counting cannot reclaim it and the collector no longer walks into it, so it
+survives the program. Two things bound it, and both matter:
+
+- **It does not accumulate.** A shared payload built and dropped inside a loop
+  is reclaimed by counting the moment its last handle goes;
+  `test_scheme_lifetime_a_shared_list_holding_a_closure_does_not_accumulate`
+  runs fifty iterations and reclaims every frame. What survives is the top-level
+  case, which is bounded by the program text the way the pre-existing
+  one-cycle-per-top-level-procedure leak is.
+- **It is a leak and never a free.** Every way the conservatism can be wrong
+  leaves something alive too long.
+
+Fixing it properly means making a payload a node of the collector's graph in its
+own right — its own trial count, its own registry, its own place in the marking
+and breaking steps — which is a larger change than #40 was and wants its own
+issue. The cheaper-looking alternatives do not survive contact: subtracting each
+payload's edges once per pass loses the signal that says a payload is *also*
+held by a C local, and a payload flag saying "this one can reach an environment"
+turns a missed update into corruption rather than a leak.
+
 ### Tail calls are optimized; the depth guard still is not going anywhere
 
 R7RS mandates proper tail calls, and `summa_scheme_evaluate_inner` is a
@@ -328,14 +374,40 @@ Lists are `SummaList` — dynamic arrays, not cons cells. Two consequences:
 
 - `(cons 1 2)` has no representation. There are no improper pairs, so `cons`
   takes a list as its second argument or errors.
-- There is no shared structure. `cdr` copies, so no two values ever observe the
-  same tail, and a mutation through one of them could not be seen through
-  another. `set-car!` would type-check and do nothing observable.
+- There is no shared *structure*. `cdr` builds a new list, so no two values ever
+  observe the same tail, and a mutation through one of them could not be seen
+  through another. `set-car!` would type-check and do nothing observable.
 
 Shipping them would be worse than omitting them. Implementing them for real
 means cons cells, which means reference counting — and cons cells can point at
 each other, so it means the cycle collector too. Environments already have both;
 this is the same machinery pointed at a second type.
+
+#### And now there is shared *representation*, which is a different thing
+
+A payload is shared the moment two values name it, which since #40 is every
+variable reference — `(define ys xs)` gives one list two names, and
+`((lambda (l) l) xs)` gives it two for the length of a call. Nothing can observe
+that today, and the reason is exactly the paragraph above: **there is no
+operation in this language that writes through a payload.** `cdr` builds,
+`cons` builds, `set!` replaces a binding rather than editing a value, and
+`set-car!`/`set-cdr!` do not exist.
+
+That is a property of the current builtin set, not of the design, and it is the
+one thing sharing depends on. Whoever adds an operation that mutates a list,
+vector or string in place is adding it to a value that other names already hold,
+and has to answer for that before writing the function:
+
+- **Copy on write**, which needs the count — `summa_scheme_list_ref_count` is
+  already there — and a rule for what "sole owner" means when the evaluator has
+  a handle in flight.
+- **Or mutate, and mean it**, which is R7RS's answer and makes the sharing
+  observable on purpose. Then `(define ys xs)` aliasing is the semantics rather
+  than an implementation detail, and the copies `cons` and `cdr` make become the
+  surprising part.
+
+Either is defensible. Adding `set-car!` without picking one is how a language
+gets aliasing nobody designed.
 
 ### `/` has no correct answer with the current value types
 
@@ -359,9 +431,10 @@ the predicate names should not imply a tower that isn't there.
 `SUMMA_SCHEME_SPECIAL_FORMS`. User-defined procedures, with lexically scoped
 closures and arity checking. Application from either operator position — a bound
 name (`(f 1)`) or an expression (`((lambda (x) x) 1)`), both routed through
-`summa_scheme_apply`. Deep copy and free, which is what lets values outlive the
-frame that produced them. `summa_scheme_read`, so a program can be written as
-source rather than built as values.
+`summa_scheme_apply`. Counted payloads, which is what lets values outlive the
+frame that produced them without being walked to get there.
+`summa_scheme_read`, so a program can be written as source rather than built as
+values.
 
 Twenty-three builtins: the arithmetic, comparison, boolean, string and list sets
 above, plus `procedure?`. Recursion has a numeric base case now, which is what
@@ -396,6 +469,12 @@ allocated anyway. A call is three allocations where it was eight, and binding a
 list no longer walks it. See
 [An argument is moved into the frame](#an-argument-is-moved-into-the-frame).
 
+A value is copied by **retaining** it. A list, a vector and a string carry a
+reference-counted payload, so naming one costs a counter increment rather than a
+walk, and the last thing that scaled with the size of a value rather than the
+number of calls is gone. See
+[A value is copied by retaining it](#a-value-is-copied-by-retaining-it).
+
 **Not done.** `/`, the equality procedures, the remaining type predicates,
 `display` and `newline`.
 
@@ -410,9 +489,10 @@ copied is worth a quarter to two fifths, and the allocations that went with it
 were worth more than the copy. A binding lookup that is not a linear scan was
 built, measured and taken back out; see
 [The binding lookup is still a scan](#the-binding-lookup-is-still-a-scan-and-the-measurement-is-why).
-What is left is the *other* copy — a variable reference still duplicates the
-value it names — which is issue #40 and a larger question than any of the three,
-because it is about what `SummaSchemeValue` ownership means.
+The *other* copy — a variable reference duplicating the value it names — was the
+fourth, and the largest of the four on the cases it touched; it is gone, and
+what is left is not a copy at all. See
+[A value is copied by retaining it](#a-value-is-copied-by-retaining-it).
 
 That measurement exists. `benchmarks/scheme` is a set of programs written to
 isolate one cost each, printing wall time, allocations and bytes per call; it is
@@ -424,42 +504,52 @@ evaluator as it stands, Release, on an M-series Mac, with the columns to its lef
 being what it said before interning, before frames were right-sized, and before
 arguments were moved:
 
-| Reading                                        | Before interning               | Interned                         | Right-sized                       | Now                                  |
-| ---------------------------------------------- | ------------------------------ | -------------------------------- | --------------------------------- | ------------------------------------ |
-| a user procedure call                          | ~1.2 µs, 15 allocations, 2 KB  | ~0.63 µs, 11 allocations, 1.9 KB | ~0.62 µs, 11 allocations, 0.64 KB | **~0.45 µs, 6 allocations, 0.50 KB** |
-| a call binding nothing, over the loop it is in | +356 ns, +5 allocations, 832 B | +186 ns, +5 allocations, 832 B   | +137 ns, +3 allocations, 128 B    | **+71 ns, +1 allocation, 88 B**      |
-| each argument bound                            | +123 ns, +2 allocations        | +38 ns, **+0 allocations**       | +56 ns, +0 allocations, +88 B     | +57 ns, +0 allocations, +88 B        |
-| 32 lexical frames rather than 1                | +52% per call                  | +40% per call                    | +42% per call                     | +54% per call                        |
-| the last of 256 globals rather than of 8       | +117% per call                 | +41% per call                    | +42% per call                     | +53% per call                        |
-| a 128-element list argument rather than 1      | 3.3× the time, 9.5× the bytes  | 5.2× the time, 9.7× the bytes    | 5.1× the time, 16.5× the bytes    | **4.1× the time, 14.1× the bytes**   |
+| Reading                                        | Before interning               | Interned                       | Right-sized                       | Arguments moved                   | Now                                       |
+| ---------------------------------------------- | ------------------------------ | ------------------------------ | --------------------------------- | --------------------------------- | ----------------------------------------- |
+| a user procedure call                          | ~1.2 µs, 15 allocations, 2 KB  | ~0.63 µs, 11 alloc., 1.9 KB    | ~0.62 µs, 11 allocations, 0.64 KB | ~0.31 µs, 6 allocations, 0.50 KB  | ~0.38 µs, 6 allocations, 0.50 KB          |
+| a call binding nothing, over the loop it is in | +356 ns, +5 allocations, 832 B | +186 ns, +5 allocations, 832 B | +137 ns, +3 allocations, 128 B    | +47 ns, +1 allocation, 88 B       | +55 ns, +1 allocation, 88 B               |
+| each argument bound                            | +123 ns, +2 allocations        | +38 ns, **+0 allocations**     | +56 ns, +0 allocations, +88 B     | +43 ns, +0 allocations, +88 B     | +43 ns, +0 allocations, +88 B             |
+| 32 lexical frames rather than 1                | +52% per call                  | +40% per call                  | +42% per call                     | +54% per call                     | +47% per call                             |
+| the last of 256 globals rather than of 8       | +117% per call                 | +41% per call                  | +42% per call                     | +51% per call                     | +47% per call                             |
+| a 128-element list argument rather than 1      | 3.3× the time, 9.5× the bytes  | 5.2× the time, 9.7× the bytes  | 5.1× the time, 16.5× the bytes    | 4.0× the time, 14.1× the bytes    | **1.00× the time, 1.00× the bytes**       |
 
 The two rightmost columns come from one alternated measurement of the same
 binaries, so they are differences rather than two separate readings of the
-machine; the two on the left are as they were published.
+machine; the three on the left are as they were published. The "arguments
+moved" column reads 4.0× and 14.1× where #32 published 4.1× and 14.1×, which is
+the same binary measured on a faster day and is the reason the two columns being
+compared have to come from one run.
 
 Three rows want reading carefully.
 
-**A frame that binds nothing is now one allocation and 88 bytes**, and 88 bytes
-is the whole of it: a `RefCount` header plus `SummaSchemeEnvironment_t`, with
-the binding array's header inside that block rather than beside it. There is
-nothing else left in a call that binds nothing to remove.
+**The 128-element row did not shrink, it went away.** Its ratio had risen for
+two releases running — 3.3× to 5.2× to 5.1× — because everything being removed
+was *fixed* per-call cost, which left the O(length) copy a larger share of what
+was left. Moving the argument took one of the two copies away and brought it to
+4.0×. Counting the payload takes the other, and threading a 128-element list
+through a call now costs **491 ns and 632 bytes against the 1-element case's 491
+ns and 632 bytes** — the same numbers, to the last significant figure, because
+nothing the evaluator does to run that program depends on the length any more.
+The series `args/list-thread-{1,16,128}` exists to be read as a flat line, and
+for the first time it is one.
 
-**The 128-element row finally turned round.** Its ratio had risen for two
-releases running — 3.3× to 5.2× to 5.1× — because everything being removed was
-*fixed* per-call cost, which left the O(length) copy a larger share of what was
-left. Moving the argument takes one of the two copies away, and the ratio falls
-for the first time. It does not flatten, and it was never going to: a variable
-reference still hands back a copy of the value it names, so a list argument is
-still walked once per call. That is issue #40, and this row is what it will be
-read against.
+**`args/list-walk` fell by half and cannot go flat**, and the difference between
+those two sentences is the language rather than the evaluator. `cdr` builds a
+new list of length n-1, so walking n elements copies n(n-1)/2 of them however
+cheap a reference is. That is
+[`set-car!` and `set-cdr!` have nothing to mutate](#set-car-and-set-cdr-have-nothing-to-mutate)
+again from the other side: cons cells are what would fix it.
 
-**The two lookup ratios got worse, and nothing about them changed.** The chain
-walk and the global scan cost exactly what they always did; what fell is
-everything they are divided by, so a fixed cost is now a larger fraction of a
-smaller call. That is what a ratio does when the denominator moves, and it is
-the reason absolute columns are kept beside it. Hashing the frame was measured
-against these two rows and lost anyway — see
-[The binding lookup is still a scan](#the-binding-lookup-is-still-a-scan-and-the-measurement-is-why).
+**A user procedure call got slower, and it is the compiler.** 0.31 µs to
+0.38 µs is GCC 13.4 at `-O3`, where nothing about that case touches a counted
+payload — the frame, the two integer bindings and the arithmetic are byte for
+byte the same work at the same six allocations. The same source under Apple
+clang is 338 ns before and 340 ns after, and under **GCC at `-O2`** it is 372 ns
+before and 367 ns after. `-O3` finds something in the old shape of
+`summa_scheme_value_copy` that it does not find in the new one, and it is worth
+about 17% of the cases that allocate a frame. See
+[What it cost, and what turned out not to be the cost](#what-it-cost-and-what-turned-out-not-to-be-the-cost)
+— a control build settles that it is not the counting.
 
 ### A frame is the size of its call
 
@@ -630,6 +720,158 @@ the copy, exactly as
 found. Three changes running now have turned out to be dominated by something
 that was not the evaluator, and a control build is what says which term is being
 read.
+
+### A value is copied by retaining it
+
+`summa_scheme_evaluate`'s symbol case used to end with a deep copy of the value
+the name was bound to. Every mention of a variable therefore walked and
+reallocated whatever it named, and for a list argument threaded through a loop
+that was the whole list, once per call, forever. It was the last cost in the
+evaluator that scaled with the *size of a value* rather than with the number of
+calls.
+
+Three payloads are counted now, and the counter is carved out of the same
+allocation the way `SummaSchemeEnvironment`'s is — so the handle is the payload,
+`handle - 1` is its `RefCount`, and nothing gained an indirection or a malloc:
+
+| Value type              | Payload             | Copying one is |
+| ----------------------- | ------------------- | -------------- |
+| `SummaSchemeListType`   | a `SummaList`       | a retain       |
+| `SummaSchemeVectorType` | a `SummaList`       | a retain       |
+| `SummaSchemeStringType` | a `SummaString`     | a retain       |
+
+The rest were already free. A boolean, a character, a float and an integer are
+copied by value because they *are* the value, and a symbol has been an interned
+pointer since #31. `summa_scheme_value_copy` becomes a retain, and
+`summa_scheme_value_free` the matching release; the symbol case in the evaluator
+did not change at all, because what it calls did.
+
+One rule holds the whole thing up, and it is worth stating in the form that
+breaks if it stops being true: **a `SummaList` that a `SummaSchemeValue` points
+at comes from `summa_scheme_list_make_*`.** A plain `summa_list_make_empty()`
+handed to `summa_make_scheme_list` produces a value in front of an allocation
+with no counter in front of *it*, and the first release walks off the head of
+the block. Two `SummaList`s here are deliberately uncounted, and neither is ever
+inside a value: a procedure's `body`, and the argument list a call evaluates
+into.
+
+#### What this does to procedures, which the issue set aside
+
+A procedure value is still copied deep: its parameter list is duplicated and its
+body is walked. That is deliberate, and the reason is not the copy.
+
+A body is a `SummaList` of `SummaSchemeValue`, so counting it would be the same
+mechanism with no new machinery — but a shared body is a shared payload that can
+reach an environment, which is the one case
+[the collector has to be conservative about](#what-a-shared-payload-costs-the-collector),
+and a body is exactly where a nested `lambda` lives. Counting bodies would make
+that case the common one rather than the rare one. It also buys less than it
+looks: the operator position of a call resolves through the binding without
+copying anything, so a body is only walked when a procedure is passed as an
+argument or bound to a second name.
+
+There is one thing it *would* buy, and it is a bug rather than a benchmark.
+`(define (f) (set! f 2) 7)` frees the running procedure's body from inside the
+call, and `summa_scheme_evaluate_sequence_tail` then reads the next expression
+out of freed memory — PR #29 flagged it, and **counting the payloads does not
+fix it**, because the thing freed is the one list in a value that is not
+counted. The same shape through a *list* is fixed:
+`(define (grab l) (set! xs '(9)) (car l))` called as `(grab xs)` was safe before
+only because the argument was a copy, and is safe now because the argument is a
+handle and `summa_scheme_environment_assign` releases rather than frees.
+`test_scheme_lifetime_rebinding_a_shared_list_does_not_free_it` pins that half.
+The procedure half wants counting the body, and wants the collector question
+answered first.
+
+#### What it cost, and what turned out not to be the cost
+
+Release, minimum of ten rounds of `--repeat 3` per binary, the binaries
+alternated — the method the last three changes here settled on, because a single
+best-of-three cannot separate a 3% effect from this machine's drift. Homebrew
+GCC 13.4 on an M-series Mac, with Apple clang alongside.
+
+| case                   | GCC before |  GCC after |      Δ | clang before | clang after |      Δ |
+| ---------------------- | ---------: | ---------: | -----: | -----------: | ----------: | -----: |
+| `call/tail-loop`       |      309.5 |      375.2 | +21.2% |        338.3 |       340.2 |  +0.6% |
+| `call/nullary`         |      178.4 |      215.3 | +20.7% |        194.5 |   **191.0** |  −1.8% |
+| `call/ternary`         |      243.1 |      279.4 | +14.9% |        263.3 |   **252.5** |  −4.1% |
+| `args/list-thread-1`   |      526.1 |  **491.0** |  −6.7% |        562.2 |   **434.0** | −22.8% |
+| `args/list-thread-16`  |      724.4 |  **486.8** | −32.8% |        820.9 |   **435.4** | −47.0% |
+| `args/list-thread-128` |     2113.9 |  **489.4** | −76.8% |       2708.1 |   **438.2** | −83.8% |
+| `args/list-walk-32`    |     1003.9 |  **588.4** | −41.4% |       1196.3 |   **552.3** | −53.8% |
+| `args/list-walk-256`   |     3842.3 | **1421.1** | −63.0% |       5076.0 |  **1582.4** | −68.8% |
+| `lookup/chain-1`       |      334.6 |      382.2 | +14.2% |        355.6 |   **329.2** |  −7.4% |
+| `lookup/chain-32`      |      515.6 |      560.0 |  +8.6% |        468.1 |   **432.4** |  −7.6% |
+| `lookup/globals-8`     |      350.3 |      391.8 | +11.8% |        372.0 |   **347.1** |  −6.7% |
+| `lookup/globals-256`   |      530.4 |      577.0 |  +8.8% |        549.9 |   **523.0** |  −4.9% |
+| `symbols/wide-frame`   |      526.5 |      590.7 | +12.2% |        569.0 |   **556.9** |  −2.1% |
+
+Allocations and bytes are exact and identical on both compilers, and they are
+where the change is least ambiguous:
+
+| case                   | allocs before | allocs after | bytes before | bytes after |  Δ bytes |
+| ---------------------- | ------------: | -----------: | -----------: | ----------: | -------: |
+| `args/list-thread-1`   |         11.00 |     **7.00** |        776.1 |       632.1 |   −18.6% |
+| `args/list-thread-16`  |         11.00 |     **7.00** |       1976.2 |       632.1 |   −68.0% |
+| `args/list-thread-128` |         11.00 |     **7.00** |      10936.4 |   **632.3** |   −94.2% |
+| `args/list-walk-32`    |         15.59 |     **8.71** |       3780.6 |      1087.0 |   −71.2% |
+| `args/list-walk-256`   |         18.92 |     **8.97** |      29090.8 |      5571.7 |   −80.9% |
+
+Every other case is byte for byte identical, which is the first thing the
+control build has to explain.
+
+**`args/list-thread` is flat.** 491.0 / 486.8 / 489.4 ns under GCC and 434.0 /
+435.4 / 438.2 under clang, for 1, 16 and 128 elements, at 7 allocations and 632
+bytes in every one of the six. Threading a list through a call has stopped being
+a function of its length, which is the whole of issue #40 stated as a number.
+
+**And the scalar cases went the other way under GCC**, by 9 to 21%, while clang
+has the same source between −7% and +1%. That is the third change running whose
+headline number is partly the toolchain, so it got the same treatment.
+
+##### The control build
+
+`SUMMA_SCHEME_COPY_PAYLOADS` is a compile-time switch on the tip's own source
+that turns `summa_scheme_value_copy` back into a walk. It is not a supported
+configuration; it exists so that one binary's worth of code can be measured with
+and without the sharing. Everything else is identical — the counter still sits
+in front of every payload, the allocation shape is the same, and a freshly built
+payload starts at a count of one, so the release in `summa_scheme_value_free`
+reclaims it either way.
+
+It says two things, and they are cleanly separable:
+
+| Comparison                     | What it isolates                 | Scalar cases                    | `args/list-thread-128`   |
+| ------------------------------ | -------------------------------- | ------------------------------- | ------------------------ |
+| control → after (same binary)  | the sharing, and only that       | GCC 0%, clang +2%               | GCC −80.9%, clang −83.9% |
+| before → control (same result) | the new code's shape, no sharing | GCC +15 to +21%, clang −3 to 0% | GCC +21%, clang +0.4%    |
+
+**The sharing is worth nothing at all on the cases that share nothing, and four
+fifths on the case built to share.** That is the result. The GCC scalar
+regression is carried by the control build in full, so it is not the retain, the
+release, or the counter — it is what GCC 13.4 does with the code around them.
+
+`-O2` settles the rest of it. The same GCC, the same two source trees, minimum
+of eight alternated rounds:
+
+| case                   | `-O2` before | `-O2` after |      Δ |
+| ---------------------- | -----------: | ----------: | -----: |
+| `call/tail-loop`       |        371.9 |       367.4 |  −1.2% |
+| `call/nullary`         |        215.9 |       218.2 |  +1.1% |
+| `call/ternary`         |        290.6 |       278.3 |  −4.2% |
+| `args/list-thread-128` |       2814.2 |   **493.4** | −82.5% |
+| `lookup/chain-32`      |        590.8 |       546.0 |  −7.6% |
+| `symbols/wide-frame`   |        615.0 |       609.6 |  −0.9% |
+
+There is no regression at `-O2` — and the *old* code is what `-O3` was
+flattering, not the new code that `-O3` is hurting: `call/tail-loop` goes 371.9
+→ 309.5 when the old source is given `-O3`, and 367.4 → 375.2 when the new one
+is. The new shape is simply insensitive to the flag. Read against clang, which
+sees none of it, the honest summary is that **GCC 13.4 at `-O3` had found
+something in a deep-copying `summa_scheme_value_copy` that it cannot find in a
+retaining one**, and it is worth about 17% of a frame. The trade is that against
+a case that fell by four fifths and an allocation count that no longer depends
+on the data.
 
 ### The binding lookup is still a scan, and the measurement is why
 
