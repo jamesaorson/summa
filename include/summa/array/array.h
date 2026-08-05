@@ -14,6 +14,8 @@ typedef SummaArray_t* SummaArray;
 
 SummaArray summa_array_make(const void* elements, size_t num_elements, size_t element_size);
 SummaArray summa_array_make_empty(size_t element_size);
+SummaArray summa_array_make_with_capacity(size_t element_size, size_t capacity);
+void       summa_array_reserve(SummaArray arr, size_t capacity);
 void       summa_array_clear(SummaArray str);
 bool       summa_array_copy(SummaArray dest, SummaArray src);
 bool       summa_array_copy_raw(SummaArray dest, void* raw, size_t len);
@@ -38,7 +40,9 @@ void       summa_array_set_at(SummaArray arr, size_t index, void* element);
 SummaArray summa_array_make(const void* elements, size_t num_elements, size_t element_size) {
     SummaArray array = malloc(sizeof(SummaArray_t));
     array->elements  = calloc(num_elements, element_size);
-    memcpy(array->elements, elements, num_elements * element_size);
+    if (num_elements > 0) {
+        memcpy(array->elements, elements, num_elements * element_size);
+    }
     array->capacity     = num_elements;
     array->length       = num_elements;
     array->element_size = element_size;
@@ -46,12 +50,34 @@ SummaArray summa_array_make(const void* elements, size_t num_elements, size_t el
 }
 
 SummaArray summa_array_make_empty(size_t element_size) {
+    return summa_array_make_with_capacity(element_size, SUMMA_ARRAY_DEFAULT_CAPACITY);
+}
+
+/* The default capacity is a guess for a caller that has none. A caller that
+ * knows how many elements are coming says so here instead, and pays for exactly
+ * that many.
+ *
+ * Capacity 0 allocates no element storage at all -- `elements` stays null,
+ * which every growth path already handles, since realloc(null, n) is how the
+ * standard spells a first allocation. */
+SummaArray summa_array_make_with_capacity(size_t element_size, size_t capacity) {
     SummaArray array    = malloc(sizeof(SummaArray_t));
-    array->elements     = malloc(element_size * SUMMA_ARRAY_DEFAULT_CAPACITY);
-    array->capacity     = SUMMA_ARRAY_DEFAULT_CAPACITY;
+    array->elements     = capacity > 0 ? malloc(element_size * capacity) : nullptr;
+    array->capacity     = capacity;
     array->length       = 0;
     array->element_size = element_size;
     return array;
+}
+
+/* Grows to hold at least `capacity` elements, and never shrinks -- an array
+ * that already has the room is left exactly as it was, so this is safe to call
+ * on a hot path where the answer is usually "already big enough". */
+void summa_array_reserve(SummaArray arr, size_t capacity) {
+    if (capacity <= arr->capacity) {
+        return;
+    }
+    arr->elements = realloc(arr->elements, capacity * arr->element_size);
+    arr->capacity = capacity;
 }
 
 void summa_array_clear(SummaArray arr) {
@@ -67,7 +93,11 @@ bool summa_array_copy(SummaArray dest, SummaArray src) {
         dest->elements = realloc(dest->elements, dest->element_size * (len + 1));
         dest->capacity = len + 1;
     }
-    memcpy(dest->elements, src->elements, dest->element_size * len);
+    /* Guarded because a zero-capacity array's `elements` is null, and memcpy is
+     * undefined on a null pointer even for a length of zero. */
+    if (len > 0) {
+        memcpy(dest->elements, src->elements, dest->element_size * len);
+    }
     dest->length = len;
     return true;
 }
@@ -77,7 +107,9 @@ bool summa_array_copy_raw(SummaArray dest, void* raw, size_t len) {
         dest->elements = realloc(dest->elements, dest->element_size * (len + 1));
         dest->capacity = len + 1;
     }
-    memcpy(dest->elements, raw, dest->element_size * len);
+    if (len > 0) {
+        memcpy(dest->elements, raw, dest->element_size * len);
+    }
     dest->length = len;
     return true;
 }
@@ -157,6 +189,12 @@ void summa_array_set_at(SummaArray arr, size_t index, void* element) {
     }                                                                                                                \
     NewType SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _make_empty)() {                                    \
         return (NewType)summa_array_make_empty(sizeof(ValueType));                                                   \
+    }                                                                                                                \
+    NewType SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _make_with_capacity)(size_t capacity) {             \
+        return (NewType)summa_array_make_with_capacity(sizeof(ValueType), capacity);                                 \
+    }                                                                                                                \
+    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _reserve)(NewType arr, size_t capacity) {              \
+        summa_array_reserve((SummaArray)arr, capacity);                                                              \
     }                                                                                                                \
     void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _clear)(NewType arr) {                                 \
         summa_array_clear((SummaArray)arr);                                                                          \

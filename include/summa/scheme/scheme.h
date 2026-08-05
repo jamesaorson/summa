@@ -268,6 +268,20 @@ struct SummaSchemeEnvironment_t {
 SummaSchemeEnvironment summa_scheme_environment_make(SummaSchemeEnvironment parent);
 SummaSchemeEnvironment summa_scheme_environment_make_global(void);
 
+/* The same, with room for exactly `count` bindings.
+ *
+ * `make` is this with a count of zero, and zero allocates no binding storage at
+ * all. That is deliberate: whoever makes an environment almost always knows how
+ * many bindings are about to go in it -- a call knows its arity, a `let` knows
+ * its clause count -- and the old default guess of eight was wrong for nearly
+ * every frame. A frame that binds more later, a body with an internal `define`,
+ * grows the ordinary way from whatever it was given. */
+SummaSchemeEnvironment summa_scheme_environment_make_with_capacity(SummaSchemeEnvironment parent, size_t count);
+
+/* Grows an existing environment's binding storage to hold at least `count`, and
+ * never shrinks it. For a frame whose size is learned after it is made. */
+void summa_scheme_environment_reserve(SummaSchemeEnvironment env, size_t count);
+
 /* One more reference, and one fewer. `acquire` returns its argument so a slot
  * can be filled and retained in one expression; both take null and do nothing
  * with it.
@@ -1920,6 +1934,10 @@ static void summa_scheme_environment_destroy(void* payload) {
 static void summa_scheme_environment_collect_if_due(void);
 
 SummaSchemeEnvironment summa_scheme_environment_make(SummaSchemeEnvironment parent) {
+    return summa_scheme_environment_make_with_capacity(parent, 0);
+}
+
+SummaSchemeEnvironment summa_scheme_environment_make_with_capacity(SummaSchemeEnvironment parent, const size_t count) {
     /* Ahead of the allocation rather than after it, so the new environment is
      * never a half-built candidate. Everything a caller is holding at this
      * point is holding a count, which is what makes it a root the pass cannot
@@ -1931,7 +1949,9 @@ SummaSchemeEnvironment summa_scheme_environment_make(SummaSchemeEnvironment pare
     assert(ref);
     const SummaSchemeEnvironment env = ref_count_as(ref, SummaSchemeEnvironment);
 
-    env->bindings    = summa_binding_list_make_empty();
+    /* Exactly `count` slots, in one allocation -- and none at all for a frame
+     * that binds nothing, which is what a call to a nullary procedure is. */
+    env->bindings    = summa_binding_list_make_with_capacity(count);
     env->parent      = summa_scheme_environment_acquire(parent);
     env->trial_count = 0;
     env->reachable   = false;
@@ -1945,6 +1965,10 @@ SummaSchemeEnvironment summa_scheme_environment_make(SummaSchemeEnvironment pare
     SUMMA_SCHEME_LIVE_ENVIRONMENTS++;
 
     return env;
+}
+
+void summa_scheme_environment_reserve(const SummaSchemeEnvironment env, const size_t count) {
+    summa_binding_list_reserve(env->bindings, count);
 }
 
 SummaSchemeEnvironment summa_scheme_environment_make_global(void) {
@@ -2076,6 +2100,12 @@ void summa_scheme_environment_init_global(SummaSchemeEnvironment env) {
      * against them by pointer. */
     summa_scheme_symbols_ensure();
 
+    /* The one frame whose size is learned after it is made -- the caller hands
+     * in an environment and this fills it. Exactly the builtins, in one
+     * allocation; anything a program goes on to `define` at the top level grows
+     * it the ordinary way. */
+    summa_scheme_environment_reserve(env, summa_scheme_builtin_count());
+
     const SummaSchemeBindingList bindings = env->bindings;
     for (size_t i = 0; i < summa_scheme_builtin_count(); i++) {
         /* The binding's name and the procedure's name are now deliberately the
@@ -2169,7 +2199,11 @@ SummaSchemeError summa_scheme_environment_assign(const SummaSchemeEnvironment en
 
 SummaSchemeError
 summa_scheme_evaluate_arguments(const SummaSchemeEnvironment env, const SummaList form, SummaList* out) {
-    SummaList args = summa_list_make_empty();
+    /* The operator is `form->value[0]`, so the rest of the form is the arity --
+     * known before the first argument is evaluated, which is what lets this be
+     * one exact allocation rather than the default eight slots plus a doubling
+     * for anything wider than that. */
+    SummaList args = summa_list_make_with_capacity(form->length > 0 ? form->length - 1 : 0);
     for (size_t i = 1; i < form->length; i++) {
         SummaSchemeValue arg;
         SummaSchemeError err = summa_scheme_evaluate(env, form->value[i], &arg);
@@ -3143,9 +3177,13 @@ static SummaSchemeError summa_scheme_let(const char*                  name,
         return summa_make_error(ERROR_MESSAGE);
     }
 
+    /* One clause is one binding on every one of the three paths -- `letrec`
+     * binds each name twice, but the second is a rebind of the first rather
+     * than a push. */
     const SummaList              clauses = form->value[1].value.list.value;
-    const SummaSchemeEnvironment frame   = summa_scheme_environment_make(env);
-    SummaSchemeError             err     = summa_success();
+    const SummaSchemeEnvironment frame =
+        summa_scheme_environment_make_with_capacity(env, clauses ? clauses->length : 0);
+    SummaSchemeError err = summa_success();
 
     if (kind == SUMMA_SCHEME_LET_RECURSIVE) {
         /* Names first, values second -- the gap is the point of letrec. */
@@ -3432,8 +3470,13 @@ static SummaSchemeError summa_scheme_procedure_frame(const SummaSchemeEnvironmen
     }
 
     /* Lexical scoping: the parent is where the procedure was defined, not
-     * where it is called. The fallback only ever covers a builtin. */
-    const SummaSchemeEnvironment frame = summa_scheme_environment_make(proc.closure ? proc.closure : env);
+     * where it is called. The fallback only ever covers a builtin.
+     *
+     * The arity was checked above, so `expected` is exactly what this frame
+     * needs -- nothing at all for a call that binds nothing, and no doubling on
+     * the way up for a procedure taking more than eight parameters. */
+    const SummaSchemeEnvironment frame =
+        summa_scheme_environment_make_with_capacity(proc.closure ? proc.closure : env, expected);
     for (size_t i = 0; i < expected; i++) {
         /* The frame takes its own copy of the *value*; the argument list is
          * about to go. The name costs nothing -- it is the same interned record

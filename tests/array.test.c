@@ -44,6 +44,119 @@ void test_array_make_empty() {
     }
 }
 
+void test_array_make_with_capacity() {
+    SCOPED_ARRAY(array, summa_array_make_with_capacity(sizeof(int), 3)) {
+        SUMMA_TEST_ASSERT_NOT_NULL(array);
+        SUMMA_TEST_ASSERT_EQ(0u, array->length);
+        SUMMA_TEST_ASSERT_EQ(3u, array->capacity);
+        SUMMA_TEST_ASSERT_EQ(sizeof(int), array->element_size);
+        SUMMA_TEST_ASSERT_NOT_NULL(array->elements);
+    }
+}
+
+void test_array_make_with_zero_capacity_allocates_no_elements() {
+    /* The point of the entry point: a caller that knows it wants nothing pays
+     * for nothing. Freeing this must still work, and free(nullptr) is why. */
+    SCOPED_ARRAY(array, summa_array_make_with_capacity(sizeof(int), 0)) {
+        SUMMA_TEST_ASSERT_NOT_NULL(array);
+        SUMMA_TEST_ASSERT_EQ(0u, array->length);
+        SUMMA_TEST_ASSERT_EQ(0u, array->capacity);
+        SUMMA_TEST_ASSERT_NULL(array->elements);
+    }
+}
+
+void test_array_make_with_zero_capacity_still_grows() {
+    SCOPED_ARRAY(array, summa_array_make_with_capacity(sizeof(int), 0)) {
+        for (int i = 0; i < 20; i++) {
+            summa_array_push(array, &i);
+        }
+        SUMMA_TEST_ASSERT_EQ(20u, array->length);
+        SUMMA_TEST_ASSERT(array->capacity >= 20u);
+        const int* out = (const int*)array->elements;
+        for (int i = 0; i < 20; i++) {
+            SUMMA_TEST_ASSERT_EQ(i, out[i]);
+        }
+    }
+}
+
+void test_array_make_with_exact_capacity_still_grows_past_it() {
+    /* An array sized to exactly what its caller asked for is full after that
+     * many pushes. The next one has to grow, and must not lose anything. */
+    SCOPED_ARRAY(array, summa_array_make_with_capacity(sizeof(int), 3)) {
+        for (int i = 0; i < 3; i++) {
+            summa_array_push(array, &i);
+        }
+        SUMMA_TEST_ASSERT_EQ(3u, array->capacity);
+        int extra = 99;
+        summa_array_push(array, &extra);
+        SUMMA_TEST_ASSERT_EQ(4u, array->length);
+        SUMMA_TEST_ASSERT(array->capacity >= 4u);
+        const int* out = (const int*)array->elements;
+        SUMMA_TEST_ASSERT_EQ(0, out[0]);
+        SUMMA_TEST_ASSERT_EQ(1, out[1]);
+        SUMMA_TEST_ASSERT_EQ(2, out[2]);
+        SUMMA_TEST_ASSERT_EQ(99, out[3]);
+    }
+}
+
+void test_array_reserve_grows_from_zero_capacity() {
+    SCOPED_ARRAY(array, summa_array_make_with_capacity(sizeof(int), 0)) {
+        summa_array_reserve(array, 5);
+        SUMMA_TEST_ASSERT_EQ(5u, array->capacity);
+        SUMMA_TEST_ASSERT_EQ(0u, array->length);
+        SUMMA_TEST_ASSERT_NOT_NULL(array->elements);
+    }
+}
+
+void test_array_reserve_keeps_existing_elements() {
+    int vals[3] = {4, 5, 6};
+    SCOPED_ARRAY(array, summa_array_make(vals, 3, sizeof(int))) {
+        summa_array_reserve(array, 32);
+        SUMMA_TEST_ASSERT_EQ(32u, array->capacity);
+        SUMMA_TEST_ASSERT_EQ(3u, array->length);
+        const int* out = (const int*)array->elements;
+        SUMMA_TEST_ASSERT_EQ(4, out[0]);
+        SUMMA_TEST_ASSERT_EQ(5, out[1]);
+        SUMMA_TEST_ASSERT_EQ(6, out[2]);
+    }
+}
+
+void test_array_reserve_never_shrinks() {
+    SCOPED_ARRAY(array, summa_array_make_empty(sizeof(int))) {
+        const size_t before = array->capacity;
+        summa_array_reserve(array, 1);
+        SUMMA_TEST_ASSERT_EQ(before, array->capacity);
+        summa_array_reserve(array, 0);
+        SUMMA_TEST_ASSERT_EQ(before, array->capacity);
+    }
+}
+
+void test_array_copy_into_zero_capacity_destination() {
+    /* dest->elements is null here, which is the one thing a copy must not
+     * hand to memcpy unguarded. */
+    int vals[2] = {11, 12};
+    SCOPED_ARRAY(dest, summa_array_make_with_capacity(sizeof(int), 0))
+    SCOPED_ARRAY(src, summa_array_make(vals, 2, sizeof(int))) {
+        SUMMA_TEST_ASSERT(summa_array_copy(dest, src));
+        SUMMA_TEST_ASSERT_EQ(2u, dest->length);
+        const int* out = (const int*)dest->elements;
+        SUMMA_TEST_ASSERT_EQ(11, out[0]);
+        SUMMA_TEST_ASSERT_EQ(12, out[1]);
+    }
+}
+
+void test_array_copy_empty_into_zero_capacity_destination() {
+    /* Both sides empty: nothing is copied, and nothing is dereferenced. */
+    int vals[1] = {0};
+    SCOPED_ARRAY(dest, summa_array_make_with_capacity(sizeof(int), 0))
+    SCOPED_ARRAY(src, summa_array_make(vals, 0, sizeof(int))) {
+        SUMMA_TEST_ASSERT(summa_array_copy(dest, src));
+        SUMMA_TEST_ASSERT_EQ(0u, dest->length);
+        SUMMA_TEST_ASSERT_EQ(0u, dest->capacity);
+        SUMMA_TEST_ASSERT_NULL(dest->elements);
+    }
+}
+
 void test_array_clear() {
     int vals[4] = {1, 2, 3, 4};
     SCOPED_ARRAY(array, summa_array_make(vals, 4, sizeof(int))) {
@@ -313,6 +426,15 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_array_make);
     SUMMA_TEST_RUN(test_array_make_zero_elements);
     SUMMA_TEST_RUN(test_array_make_empty);
+    SUMMA_TEST_RUN(test_array_make_with_capacity);
+    SUMMA_TEST_RUN(test_array_make_with_zero_capacity_allocates_no_elements);
+    SUMMA_TEST_RUN(test_array_make_with_zero_capacity_still_grows);
+    SUMMA_TEST_RUN(test_array_make_with_exact_capacity_still_grows_past_it);
+    SUMMA_TEST_RUN(test_array_reserve_grows_from_zero_capacity);
+    SUMMA_TEST_RUN(test_array_reserve_keeps_existing_elements);
+    SUMMA_TEST_RUN(test_array_reserve_never_shrinks);
+    SUMMA_TEST_RUN(test_array_copy_into_zero_capacity_destination);
+    SUMMA_TEST_RUN(test_array_copy_empty_into_zero_capacity_destination);
     SUMMA_TEST_RUN(test_array_clear);
     SUMMA_TEST_RUN(test_array_copy_mismatched_element_size_fails);
     SUMMA_TEST_RUN(test_array_copy_grows_destination);
