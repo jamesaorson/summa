@@ -23,6 +23,50 @@ void test_string_make() {
     }
 }
 
+/* `init` is `make` writing into a header the caller supplies -- here a C local,
+ * which is what lets a string be a field of something bigger rather than a
+ * second allocation beside it. The invariant has to come out the same. */
+void test_string_init_fills_a_header_the_caller_owns() {
+    SummaString_t str = {};
+    summa_string_init(&str, HELLO_WORLD);
+    SUMMA_TEST_ASSERT_EQ_STR(HELLO_WORLD, str.value);
+    SUMMA_TEST_ASSERT_EQ(strlen(HELLO_WORLD), str.length);
+    SUMMA_TEST_ASSERT_EQ(str.length + 1, str.capacity);
+    SUMMA_TEST_ASSERT_EQ('\0', str.value[str.length]);
+    /* Not scoped: the header is a local and only the characters were
+     * allocated, so `dispose` is the whole of the teardown. */
+    summa_string_dispose(&str);
+    SUMMA_TEST_ASSERT_EQ(0u, str.length);
+    SUMMA_TEST_ASSERT_EQ(0u, str.capacity);
+    SUMMA_TEST_ASSERT_NULL(str.value);
+}
+
+/* The empty string through `init`: one byte of capacity for the terminator and
+ * nothing else. */
+void test_string_init_empty_cstr() {
+    SummaString_t str = {};
+    summa_string_init(&str, "");
+    SUMMA_TEST_ASSERT_EQ(0u, str.length);
+    SUMMA_TEST_ASSERT_EQ(1u, str.capacity);
+    SUMMA_TEST_ASSERT_EQ('\0', str.value[0]);
+    summa_string_dispose(&str);
+}
+
+/* An initialised string is an ordinary one: it grows through the same push,
+ * and `elements` was always its own heap block. */
+void test_string_init_grows_like_any_other() {
+    SummaString_t str = {};
+    summa_string_init(&str, "a");
+    for (int i = 0; i < 32; i++) {
+        summa_string_push(&str, 'b');
+    }
+    SUMMA_TEST_ASSERT_EQ(33u, str.length);
+    SUMMA_TEST_ASSERT_EQ('\0', str.value[str.length]);
+    SUMMA_TEST_ASSERT_EQ('a', str.value[0]);
+    SUMMA_TEST_ASSERT_EQ('b', str.value[32]);
+    summa_string_dispose(&str);
+}
+
 void test_string_make_empty_cstr() {
     SCOPED_STRING(str, summa_string_make("")) {
         SUMMA_TEST_ASSERT_NOT_NULL(str);
@@ -336,6 +380,9 @@ void test_string_accumulate_then_compare() {
 int main(int argc, char** argv) {
     summa_test_begin("scheme.string", argc, argv);
     SUMMA_TEST_RUN(test_string_make);
+    SUMMA_TEST_RUN(test_string_init_fills_a_header_the_caller_owns);
+    SUMMA_TEST_RUN(test_string_init_empty_cstr);
+    SUMMA_TEST_RUN(test_string_init_grows_like_any_other);
     SUMMA_TEST_RUN(test_string_make_empty_cstr);
     SUMMA_TEST_RUN(test_string_make_empty);
     SUMMA_TEST_RUN(test_string_clear);
