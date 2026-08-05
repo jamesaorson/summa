@@ -68,6 +68,26 @@ static void assert_prints(const char* program, const char* expected) {
     }
 }
 
+/* The same, for a program that is supposed to fail. The message is checked
+ * loosely -- a substring -- so an error's wording can be improved without
+ * breaking a case about ownership.
+ *
+ * These matter more than the passing ones for arguments moved into a frame: a
+ * failure is where a value can end up owned by nobody or by two things at once,
+ * and `leaks` and ASan are what actually read the result. */
+static void assert_errors(const char* program, const char* expected_fragment) {
+    SCOPED_GLOBAL_ENV(env) {
+        SummaSchemeValue       result = {};
+        const SummaSchemeError err    = run_program(env, program, &result);
+
+        SUMMA_TEST_ASSERT_MSG(err.had, "expected the program to fail, and it did not");
+        if (err.had) {
+            SUMMA_TEST_ASSERT_MSG(strstr(err.message, expected_fragment) != nullptr, err.message);
+        }
+        summa_scheme_value_free(&result);
+    }
+}
+
 /* Runs a program to completion, tears the global environment down, and asserts
  * every environment the run made went with it.
  *
@@ -218,6 +238,115 @@ void test_scheme_lifetime_plain_calls_reclaim_every_frame() {
 
 #pragma endregion Reference cycles
 
+#pragma region Arguments moved into the frame
+
+/* A call frame takes its arguments rather than copying them, so every value the
+ * argument list holds changes owner exactly once. These cases are about who
+ * frees what, and none of them can fail by printing the wrong answer -- a
+ * mistake here is a double free or a leak, and `leaks --atExit` and ASan are
+ * what read the verdict. They are written as programs anyway, because the
+ * evaluator is the only thing that builds an argument list the moving path
+ * touches.
+ *
+ * See BUILTINS.md, "An argument is moved into the frame". */
+
+/* The value that came out is the value that went in, and it survives the frame
+ * that held it. Nothing here would notice a copy; what it pins is that a moved
+ * argument is still a whole, owned value at the far end. */
+void test_scheme_lifetime_moved_argument_outlives_the_call() {
+    assert_prints("((lambda (x) x) '(1 2 3))", "(1 2 3)");
+}
+
+/* The caller's binding is untouched by the call. A variable reference still
+ * hands back a *copy* of the bound value, so what the frame moves is that copy
+ * and never the binding itself -- which is why moving is safe before the symbol
+ * case stops copying (issue #40). */
+void test_scheme_lifetime_moved_argument_does_not_alias_the_callers_binding() {
+    assert_prints("(define l '(1 2 3))"
+                  "(define (take v) v)"
+                  "(take l)"
+                  "l",
+                  "(1 2 3)");
+}
+
+/* Arity is checked before the first value changes hands, so the frame takes all
+ * the arguments or none of them. Here it takes none, and the argument list is
+ * still holding two lists that somebody has to free. */
+void test_scheme_lifetime_arity_failure_leaves_every_argument_to_the_list() {
+    assert_errors("((lambda (x) x) '(1 2 3) '(4 5 6))", "expects 1 argument(s), got 2");
+}
+
+/* The other end of the same rule, one argument short rather than one over. */
+void test_scheme_lifetime_arity_failure_with_too_few_arguments() {
+    assert_errors("(define (pair a b) a)"
+                  "(pair '(1 2 3))",
+                  "expects 2 argument(s), got 1");
+}
+
+/* An error part way through *building* the list, which is the only partial
+ * state that exists: the first operand evaluated to a list and the second did
+ * not evaluate at all, so the list holds one value and the frame was never
+ * made. */
+void test_scheme_lifetime_operand_error_frees_what_already_evaluated() {
+    assert_errors("(define (take a b) a)"
+                  "(take '(1 2 3) nowhere)",
+                  "Unbound variable: nowhere");
+}
+
+/* The same, with the failing operand a call rather than a name, so the list is
+ * unwound from underneath a nested failure. */
+void test_scheme_lifetime_nested_operand_error_frees_what_already_evaluated() {
+    assert_errors("(define (take a b) a)"
+                  "(take '(1 2 3) (car '()))",
+                  "car");
+}
+
+/* Two parameters of the same name. `environment_set` rebinds rather than
+ * pushes, and frees the value it replaces -- so the first argument is released
+ * by the frame that took it, and the second is the one that survives. Each
+ * moved value is still freed exactly once. */
+void test_scheme_lifetime_duplicate_parameter_frees_the_shadowed_argument() {
+    assert_prints("((lambda (x x) x) '(1 1 1) '(2 2 2))", "(2 2 2)");
+}
+
+/* A builtin *borrows* the argument list -- only the user-procedure path moves
+ * -- so a builtin returning something built out of an argument has to copy it,
+ * and the list is freed whole afterwards. This is the case that would break
+ * first if the two paths were ever collapsed into one. */
+void test_scheme_lifetime_builtin_arguments_are_borrowed_not_moved() {
+    assert_prints("(define l '(1 2 3))"
+                  "(car (cdr l))",
+                  "2");
+}
+
+/* A builtin that fails after its arguments are evaluated, so the list is freed
+ * on an error path with everything still in it. */
+void test_scheme_lifetime_builtin_failure_frees_its_arguments() {
+    assert_errors("(car '(1 2 3) '(4 5 6))", "car");
+}
+
+/* A procedure passed as an argument carries a counted reference to its closure.
+ * Moving the value moves that reference; copying it would have taken a second
+ * one and released it again. Either way the count has to balance, and the frame
+ * this makes has to be reclaimed. */
+void test_scheme_lifetime_moved_procedure_argument_keeps_its_closure() {
+    assert_reclaims_every_environment("(define (apply-twice f x) (f (f x)))"
+                                      "(define (make-adder n) (lambda (x) (+ x n)))"
+                                      "(apply-twice (make-adder 3) 10)",
+                                      "16");
+}
+
+/* The list cases, at the length the benchmark measures, run enough times that a
+ * value leaked per call would be visible rather than a rounding error. The
+ * answer is incidental; the environment count is the assertion. */
+void test_scheme_lifetime_repeated_list_arguments_reclaim_every_frame() {
+    assert_reclaims_every_environment("(define (thread l n) (if (zero? n) l (thread l (- n 1))))"
+                                      "(car (thread '(1 2 3 4 5 6 7 8) 50))",
+                                      "1");
+}
+
+#pragma endregion Arguments moved into the frame
+
 int main(int argc, char** argv) {
     summa_test_begin("scheme.lifetime", argc, argv);
 
@@ -231,6 +360,18 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_scheme_lifetime_internal_define_reclaims_its_frame);
     SUMMA_TEST_RUN(test_scheme_lifetime_repeated_letrec_does_not_accumulate_environments);
     SUMMA_TEST_RUN(test_scheme_lifetime_plain_calls_reclaim_every_frame);
+
+    SUMMA_TEST_RUN(test_scheme_lifetime_moved_argument_outlives_the_call);
+    SUMMA_TEST_RUN(test_scheme_lifetime_moved_argument_does_not_alias_the_callers_binding);
+    SUMMA_TEST_RUN(test_scheme_lifetime_arity_failure_leaves_every_argument_to_the_list);
+    SUMMA_TEST_RUN(test_scheme_lifetime_arity_failure_with_too_few_arguments);
+    SUMMA_TEST_RUN(test_scheme_lifetime_operand_error_frees_what_already_evaluated);
+    SUMMA_TEST_RUN(test_scheme_lifetime_nested_operand_error_frees_what_already_evaluated);
+    SUMMA_TEST_RUN(test_scheme_lifetime_duplicate_parameter_frees_the_shadowed_argument);
+    SUMMA_TEST_RUN(test_scheme_lifetime_builtin_arguments_are_borrowed_not_moved);
+    SUMMA_TEST_RUN(test_scheme_lifetime_builtin_failure_frees_its_arguments);
+    SUMMA_TEST_RUN(test_scheme_lifetime_moved_procedure_argument_keeps_its_closure);
+    SUMMA_TEST_RUN(test_scheme_lifetime_repeated_list_arguments_reclaim_every_frame);
 
     return summa_test_end();
 }

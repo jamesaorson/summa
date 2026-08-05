@@ -26,6 +26,14 @@ void       summa_array_remove_at(SummaArray arr, size_t index);
 bool       summa_array_index_of(SummaArray arr, void* element, size_t* out_index);
 void       summa_array_set_at(SummaArray arr, size_t index, void* element);
 
+/* The same array, in a header the caller already has. `init` is
+ * `make_with_capacity` writing into storage it did not allocate, and `dispose`
+ * is `free` releasing the elements and leaving the header alone -- so an array
+ * can be a field of a bigger struct rather than a second allocation beside it.
+ * Everything else above works on it unchanged, growth included. */
+void summa_array_init_with_capacity(SummaArray arr, size_t element_size, size_t capacity);
+void summa_array_dispose(SummaArray arr);
+
 #endif
 
 #ifdef SUMMA_ARRAY_IMPLEMENTATION
@@ -61,12 +69,37 @@ SummaArray summa_array_make_empty(size_t element_size) {
  * which every growth path already handles, since realloc(null, n) is how the
  * standard spells a first allocation. */
 SummaArray summa_array_make_with_capacity(size_t element_size, size_t capacity) {
-    SummaArray array    = malloc(sizeof(SummaArray_t));
-    array->elements     = capacity > 0 ? malloc(element_size * capacity) : nullptr;
-    array->capacity     = capacity;
-    array->length       = 0;
-    array->element_size = element_size;
+    SummaArray array = malloc(sizeof(SummaArray_t));
+    summa_array_init_with_capacity(array, element_size, capacity);
     return array;
+}
+
+/* An array whose header is not its own allocation. The header is the caller's
+ * -- a field, a local, anything with the right lifetime -- and only the element
+ * storage is malloc'd, so an owner that would otherwise pay a second
+ * malloc/free pair per instance pays none.
+ *
+ * Nothing downstream can tell the difference: `elements` is an ordinary heap
+ * pointer that grows through `realloc` exactly as it always did. Only the
+ * teardown differs, and `summa_array_dispose` is the whole of it. */
+void summa_array_init_with_capacity(SummaArray arr, size_t element_size, size_t capacity) {
+    arr->elements     = capacity > 0 ? malloc(element_size * capacity) : nullptr;
+    arr->capacity     = capacity;
+    arr->length       = 0;
+    arr->element_size = element_size;
+}
+
+/* Releases the element storage and leaves the header where it is, emptied. The
+ * counterpart to `init`, and the two-line difference from `free`.
+ *
+ * Emptied rather than merely freed, so a header that outlives its contents --
+ * one embedded in a struct being torn down around it -- reads as a zero-length
+ * array rather than as a dangling pointer. */
+void summa_array_dispose(SummaArray arr) {
+    free(arr->elements);
+    arr->elements = nullptr;
+    arr->capacity = 0;
+    arr->length   = 0;
 }
 
 /* Grows to hold at least `capacity` elements, and never shrinks -- an array
@@ -192,6 +225,12 @@ void summa_array_set_at(SummaArray arr, size_t index, void* element) {
     }                                                                                                                \
     NewType SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _make_with_capacity)(size_t capacity) {             \
         return (NewType)summa_array_make_with_capacity(sizeof(ValueType), capacity);                                 \
+    }                                                                                                                \
+    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _init_with_capacity)(NewType arr, size_t capacity) {   \
+        summa_array_init_with_capacity((SummaArray)arr, sizeof(ValueType), capacity);                                \
+    }                                                                                                                \
+    void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _dispose)(NewType arr) {                               \
+        summa_array_dispose((SummaArray)arr);                                                                        \
     }                                                                                                                \
     void SUMMA_TOKEN_CONCAT3(summa_, NewTypeNameForFunctions, _reserve)(NewType arr, size_t capacity) {              \
         summa_array_reserve((SummaArray)arr, capacity);                                                              \

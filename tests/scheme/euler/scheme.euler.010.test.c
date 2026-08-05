@@ -16,11 +16,13 @@
  *
  * No longer blocked on tail calls: the recursion here is an accumulator loop
  * and the trampoline runs it at whatever depth it asks for. What it is blocked
- * on now is per-call cost, paid 10^8 times -- a malloc'd frame per call, a deep
- * copy per argument, a string per binding name, and an `strcmp` walk down the
- * environment chain to resolve each one. Tail calls made this problem
- * *terminate*; they did not make it finish quickly, and the two are separate
- * pieces of work.
+ * on now is per-call cost, paid 10^8 times. That bill keeps shrinking -- names
+ * are interned, a frame is sized to its call, and an argument is moved into it
+ * rather than copied, which together took a call from fifteen allocations to
+ * six -- but three allocations and a walk down the environment chain per call
+ * is still three allocations and a walk, 10^8 times. Tail calls made this
+ * problem *terminate*; they did not make it finish quickly, and the two are
+ * separate pieces of work.
  *
  * Left un-run rather than merely marked, because a case this slow is a cost
  * every CI run pays for no signal. Turning it back on wants either the per-call

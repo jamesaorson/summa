@@ -240,13 +240,17 @@ typedef struct {
 
 SUMMA_ARRAY_GENERATE_TYPE(SummaSchemeBindingList, binding_list, SummaSchemeBinding)
 
-/* The trailing four fields are the cycle collector's, not the evaluator's: the
+/* `bindings` is the array *header*, by value rather than by pointer: a frame is
+ * one allocation for the environment and one for its binding storage, where it
+ * used to be three. See "A frame is two allocations" in BUILTINS.md.
+ *
+ * The trailing four fields are the cycle collector's, not the evaluator's: the
  * registry links every live environment into one intrusive list, and the two
  * scratch fields are written and read within a single collection pass. See
  * "Cycle collection" in the implementation section. */
 struct SummaSchemeEnvironment_t {
-    SummaSchemeBindingList bindings;
-    SummaSchemeEnvironment parent;
+    SummaSchemeBindingList_t bindings;
+    SummaSchemeEnvironment   parent;
 
     SummaSchemeEnvironment registry_previous;
     SummaSchemeEnvironment registry_next;
@@ -544,6 +548,15 @@ SummaSchemeError
 summa_scheme_procedure_dispatch_global(SummaSchemeProcedure proc, const SummaList args, SummaSchemeValue* out);
 SummaSchemeError
 summa_scheme_evaluate_arguments(const SummaSchemeEnvironment env, const SummaList form, SummaList* out);
+
+/* Frees the list and whatever it still owns. "Still" is load-bearing: a call
+ * frame moves the arguments out rather than copying them, and takes the list's
+ * length to zero on the way, so after one of those this frees the array and
+ * nothing in it. A builtin borrows instead, and then this frees everything.
+ *
+ * The pair to `summa_scheme_evaluate_arguments`, and for a host: the
+ * evaluator's own argument list has its header on the C stack and is torn down
+ * without ever being freed. */
 void summa_scheme_argument_list_free(SummaList args);
 
 /* Frees a list and every value in it. Defined further down, but the reader
@@ -1525,12 +1538,18 @@ static SummaSchemeError summa_scheme_print_styled(const SummaSchemeValue value, 
 }
 
 /* summa_list_copy moves elements as raw bytes, leaving the copy sharing every
- * handle inside them. These walk instead. */
+ * handle inside them. These walk instead.
+ *
+ * The length is known before the first element is copied, so the destination is
+ * one exact allocation. Built from `make_empty` it was five reallocs and 320
+ * bytes of slack for a 128-element list -- the same over-allocation
+ * `summa_scheme_environment_make_with_capacity` stopped paying for a frame, on
+ * the one remaining copy that is O(the list). */
 static SummaList summa_scheme_list_copy_deep(const SummaList src) {
     if (!src) {
         return nullptr;
     }
-    SummaList dest = summa_list_make_empty();
+    SummaList dest = summa_list_make_with_capacity(src->length);
     for (size_t i = 0; i < src->length; i++) {
         SummaSchemeValue element;
         summa_scheme_value_copy(&element, &src->value[i]);
@@ -1816,8 +1835,11 @@ static void summa_scheme_environment_for_each_edge(const SummaSchemeEnvironment 
                                                    SummaSchemeEnvironmentEdgeFn visit,
                                                    void*                        context) {
     visit(&env->parent, context);
-    for (size_t i = 0; env->bindings && i < env->bindings->length; i++) {
-        summa_scheme_value_for_each_environment_edge(&env->bindings->value[i].value, visit, context);
+    /* No null check on the storage: an environment being torn down has already
+     * had its bindings disposed, and `dispose` leaves a zero-length array
+     * behind rather than a dangling one, so this loop simply does not run. */
+    for (size_t i = 0; i < env->bindings.length; i++) {
+        summa_scheme_value_for_each_environment_edge(&env->bindings.value[i].value, visit, context);
     }
 }
 
@@ -1923,11 +1945,12 @@ static void summa_scheme_environment_destroy(void* payload) {
 
     /* The value only: a binding's name is interned, so the environment never
      * owned it. */
-    for (size_t i = 0; i < env->bindings->length; i++) {
-        summa_scheme_value_free(&env->bindings->value[i].value);
+    for (size_t i = 0; i < env->bindings.length; i++) {
+        summa_scheme_value_free(&env->bindings.value[i].value);
     }
-    summa_binding_list_free(env->bindings);
-    env->bindings = nullptr;
+    /* Disposed rather than freed: the header is a field of this environment, so
+     * only the element storage was ever its own allocation. */
+    summa_binding_list_dispose(&env->bindings);
     /* The block itself is ref_count's to free, immediately after this returns. */
 }
 
@@ -1950,8 +1973,10 @@ SummaSchemeEnvironment summa_scheme_environment_make_with_capacity(SummaSchemeEn
     const SummaSchemeEnvironment env = ref_count_as(ref, SummaSchemeEnvironment);
 
     /* Exactly `count` slots, in one allocation -- and none at all for a frame
-     * that binds nothing, which is what a call to a nullary procedure is. */
-    env->bindings    = summa_binding_list_make_with_capacity(count);
+     * that binds nothing, which is what a call to a nullary procedure is. The
+     * header itself is already here, inside the block ref_count just handed
+     * back, so this is the frame's second and last allocation. */
+    summa_binding_list_init_with_capacity(&env->bindings, count);
     env->parent      = summa_scheme_environment_acquire(parent);
     env->trial_count = 0;
     env->reachable   = false;
@@ -1968,7 +1993,7 @@ SummaSchemeEnvironment summa_scheme_environment_make_with_capacity(SummaSchemeEn
 }
 
 void summa_scheme_environment_reserve(const SummaSchemeEnvironment env, const size_t count) {
-    summa_binding_list_reserve(env->bindings, count);
+    summa_binding_list_reserve(&env->bindings, count);
 }
 
 SummaSchemeEnvironment summa_scheme_environment_make_global(void) {
@@ -2106,7 +2131,7 @@ void summa_scheme_environment_init_global(SummaSchemeEnvironment env) {
      * it the ordinary way. */
     summa_scheme_environment_reserve(env, summa_scheme_builtin_count());
 
-    const SummaSchemeBindingList bindings = env->bindings;
+    const SummaSchemeBindingList bindings = &env->bindings;
     for (size_t i = 0; i < summa_scheme_builtin_count(); i++) {
         /* The binding's name and the procedure's name are now deliberately the
          * *same* record. They used to be separate strings so that freeing one
@@ -2119,10 +2144,10 @@ void summa_scheme_environment_init_global(SummaSchemeEnvironment env) {
 }
 
 SummaSchemeError summa_scheme_environment_set(const SummaSchemeEnvironment env, SummaSchemeBinding newBinding) {
-    for (size_t i = 0; i < env->bindings->length; i++) {
+    for (size_t i = 0; i < env->bindings.length; i++) {
         /* By reference: a copy of the element would take the rebinding with it
          * when it went out of scope, leaving the environment untouched. */
-        SummaSchemeBinding* binding = &env->bindings->value[i];
+        SummaSchemeBinding* binding = &env->bindings.value[i];
         if (binding->name == newBinding.name) {
             /* The old value is being replaced, so it goes before the overwrite
              * rather than after it. The incoming value is moved in rather than
@@ -2136,7 +2161,7 @@ SummaSchemeError summa_scheme_environment_set(const SummaSchemeEnvironment env, 
     }
     /* Pushed by value: the environment takes ownership of the binding's value
      * from here on. */
-    summa_binding_list_push(env->bindings, &newBinding);
+    summa_binding_list_push(&env->bindings, &newBinding);
     return summa_success();
 }
 
@@ -2164,7 +2189,7 @@ SummaSchemeError summa_scheme_environment_get_owner(const SummaSchemeEnvironment
      * comparison inside it is now one pointer against another rather than a
      * strcmp, so the walk pays for its length and not for its names. */
     for (SummaSchemeEnvironment scope = env; scope; scope = scope->parent) {
-        const SummaSchemeBindingList bindings = scope->bindings;
+        const SummaSchemeBindingList bindings = &scope->bindings;
         for (size_t i = 0; i < bindings->length; i++) {
             if (bindings->value[i].name == name) {
                 *out       = bindings->value[i];
@@ -2180,9 +2205,9 @@ SummaSchemeError summa_scheme_environment_get_owner(const SummaSchemeEnvironment
 SummaSchemeError summa_scheme_environment_assign(const SummaSchemeEnvironment env,
                                                  const SummaSchemeSymbolName  name,
                                                  SummaSchemeValue             value) {
-    for (size_t i = 0; i < env->bindings->length; i++) {
+    for (size_t i = 0; i < env->bindings.length; i++) {
         /* By reference: a copy would carry the rebinding out of scope. */
-        SummaSchemeBinding* binding = &env->bindings->value[i];
+        SummaSchemeBinding* binding = &env->bindings.value[i];
         if (binding->name == name) {
             summa_scheme_value_free(&binding->value);
             binding->value = value;
@@ -2197,22 +2222,48 @@ SummaSchemeError summa_scheme_environment_assign(const SummaSchemeEnvironment en
     return summa_make_error(ERROR_MESSAGE);
 }
 
-SummaSchemeError
-summa_scheme_evaluate_arguments(const SummaSchemeEnvironment env, const SummaList form, SummaList* out) {
+/* Fills a header the caller already has. The evaluator's own is a C local, so
+ * the only thing a call allocates for its arguments is the element storage.
+ *
+ * On failure `args` holds whatever evaluated before the one that did not, and
+ * disposing it is the caller's -- which is what it was going to do anyway. */
+static SummaSchemeError
+summa_scheme_evaluate_arguments_into(const SummaSchemeEnvironment env, const SummaList form, const SummaList args) {
     /* The operator is `form->value[0]`, so the rest of the form is the arity --
      * known before the first argument is evaluated, which is what lets this be
      * one exact allocation rather than the default eight slots plus a doubling
      * for anything wider than that. */
-    SummaList args = summa_list_make_with_capacity(form->length > 0 ? form->length - 1 : 0);
+    summa_list_init_with_capacity(args, form->length > 0 ? form->length - 1 : 0);
     for (size_t i = 1; i < form->length; i++) {
         SummaSchemeValue arg;
         SummaSchemeError err = summa_scheme_evaluate(env, form->value[i], &arg);
         if (err.had) {
-            summa_scheme_argument_list_free(args);
-            *out = nullptr;
             return err;
         }
         summa_list_push(args, &arg);
+    }
+    return summa_success();
+}
+
+/* Frees every value still in the list and releases its storage, leaving the
+ * header where it is. */
+static void summa_scheme_argument_list_dispose(const SummaList args) {
+    for (size_t i = 0; i < args->length; i++) {
+        summa_scheme_value_free(&args->value[i]);
+    }
+    summa_list_dispose(args);
+}
+
+SummaSchemeError
+summa_scheme_evaluate_arguments(const SummaSchemeEnvironment env, const SummaList form, SummaList* out) {
+    /* A host asked for the list, so the header is heap and the host frees it.
+     * The `_into` form beneath is what the evaluator calls. */
+    const SummaList        args = summa_list_make_with_capacity(0);
+    const SummaSchemeError err  = summa_scheme_evaluate_arguments_into(env, form, args);
+    if (err.had) {
+        summa_scheme_argument_list_free(args);
+        *out = nullptr;
+        return err;
     }
     *out = args;
     return summa_success();
@@ -2222,32 +2273,39 @@ void summa_scheme_argument_list_free(SummaList args) {
     if (!args) {
         return;
     }
-    for (size_t i = 0; i < args->length; i++) {
-        summa_scheme_value_free(&args->value[i]);
-    }
+    summa_scheme_argument_list_dispose(args);
     summa_list_free(args);
 }
 
-static SummaSchemeError summa_scheme_procedure_frame(const SummaSchemeEnvironment env,
-                                                     const SummaSchemeProcedure   proc,
-                                                     const SummaList              args,
-                                                     SummaSchemeEnvironment*      out);
+static SummaSchemeError summa_scheme_procedure_frame_moving(const SummaSchemeEnvironment env,
+                                                            const SummaSchemeProcedure   proc,
+                                                            const SummaList              args,
+                                                            SummaSchemeEnvironment*      out);
 
 static SummaSchemeError summa_scheme_apply(const SummaSchemeEnvironment env,
                                            const SummaSchemeProcedure   proc,
                                            const SummaList              form,
                                            SummaSchemeValue*            out,
                                            SummaSchemeStep*             step) {
-    SummaList        args = nullptr;
-    SummaSchemeError err  = summa_scheme_evaluate_arguments(env, form, &args);
+    /* The header is a local, not an allocation: an argument list is wanted for
+     * exactly the length of the call that made it, which is the lifetime a C
+     * local already has. Only its element storage is malloc'd. */
+    SummaList_t      args = {};
+    SummaSchemeError err  = summa_scheme_evaluate_arguments_into(env, form, &args);
     if (!err.had) {
         if (!proc.body) {
             /* A builtin runs to a value here and now -- there is no body to
-             * continue into, so nothing to hand back. */
-            err = summa_scheme_procedure_dispatch_global(proc, args, out);
+             * continue into, so nothing to hand back. It *borrows* the list:
+             * every builtin that returns something built out of an argument
+             * copies it, because the teardown below is unconditional. */
+            err = summa_scheme_procedure_dispatch_global(proc, &args, out);
         } else {
             SummaSchemeEnvironment frame = nullptr;
-            err                          = summa_scheme_procedure_frame(env, proc, args, &frame);
+            /* These arguments were evaluated for this call and nothing else
+             * holds them, so the frame takes them rather than copying them --
+             * and `args` is left empty, which is what keeps the teardown below
+             * from reaching what it gave away. */
+            err = summa_scheme_procedure_frame_moving(env, proc, &args, &frame);
             if (!err.had) {
                 /* The body's last expression is a tail position, so the call
                  * ends here rather than nesting: the trampoline picks it up
@@ -2260,8 +2318,11 @@ static SummaSchemeError summa_scheme_apply(const SummaSchemeEnvironment env,
             }
         }
     }
-    /* Arguments die with the call; the frame copied what it bound. */
-    summa_scheme_argument_list_free(args);
+    /* Whatever the list still owns dies with the call. After a user procedure
+     * that is nothing at all -- the frame took every value -- and after a
+     * builtin, or after an arity failure, or after an operand that errored, it
+     * is all of them. */
+    summa_scheme_argument_list_dispose(&args);
     return err;
 }
 
@@ -3453,11 +3514,18 @@ static SummaSchemeSpecialFormFn summa_scheme_special_form_lookup(SummaSchemeSymb
 
 /* Checks the arity and builds the call frame, and stops there. The body is the
  * caller's to run, because a call in tail position runs it in the trampoline
- * rather than under this function. `*out` receives the only reference. */
-static SummaSchemeError summa_scheme_procedure_frame(const SummaSchemeEnvironment env,
-                                                     const SummaSchemeProcedure   proc,
-                                                     const SummaList              args,
-                                                     SummaSchemeEnvironment*      out) {
+ * rather than under this function. `*out` receives the only reference.
+ *
+ * `move` decides who owns the arguments afterwards, and it is the whole of the
+ * difference between the two entry points below. Moving empties `args` on
+ * success, so the caller's teardown reaches nothing the frame now holds; the
+ * arity check is the only thing here that can fail, and it runs before the
+ * first value changes hands, so the frame takes all of them or none. */
+static SummaSchemeError summa_scheme_procedure_frame_impl(const SummaSchemeEnvironment env,
+                                                          const SummaSchemeProcedure   proc,
+                                                          const SummaList              args,
+                                                          const bool                   move,
+                                                          SummaSchemeEnvironment*      out) {
     const size_t expected = proc.bindings ? proc.bindings->length : 0;
     if (expected != args->length) {
         snprintf(ERROR_MESSAGE,
@@ -3477,18 +3545,51 @@ static SummaSchemeError summa_scheme_procedure_frame(const SummaSchemeEnvironmen
      * the way up for a procedure taking more than eight parameters. */
     const SummaSchemeEnvironment frame =
         summa_scheme_environment_make_with_capacity(proc.closure ? proc.closure : env, expected);
+
+    /* Emptied before the first value moves rather than after the last, so there
+     * is no instant at which the list and the frame would both free the same
+     * value. The storage stays exactly where it is -- only who owns what is in
+     * it changes. */
+    if (move) {
+        args->length = 0;
+    }
+
     for (size_t i = 0; i < expected; i++) {
-        /* The frame takes its own copy of the *value*; the argument list is
-         * about to go. The name costs nothing -- it is the same interned record
+        /* The name costs nothing either way -- it is the same interned record
          * the procedure's parameter list already holds, where it used to be a
          * fresh string allocated per binding per call. */
-        SummaSchemeValue argument;
-        summa_scheme_value_copy(&argument, &args->value[i]);
+        SummaSchemeValue argument = args->value[i];
+        if (!move) {
+            summa_scheme_value_copy(&argument, &args->value[i]);
+        }
         summa_scheme_environment_set(frame, summa_scheme_binding_make(proc.bindings->value[i].value, argument));
     }
 
     *out = frame;
     return summa_success();
+}
+
+/* Takes ownership of every argument, and empties `args` to say so. For the
+ * evaluator's own calls: the operands were evaluated a moment ago for this call
+ * alone, so nothing else can be looking at them and a copy buys nothing.
+ *
+ * A duplicated parameter name is still handled by `environment_set`, which
+ * frees the value it is replacing -- so each moved value is released exactly
+ * once, by the frame, whether or not it survived to the end of the call. */
+static SummaSchemeError summa_scheme_procedure_frame_moving(const SummaSchemeEnvironment env,
+                                                            const SummaSchemeProcedure   proc,
+                                                            const SummaList              args,
+                                                            SummaSchemeEnvironment*      out) {
+    return summa_scheme_procedure_frame_impl(env, proc, args, true, out);
+}
+
+/* Leaves `args` exactly as it found it, for a caller that still owns them --
+ * `summa_scheme_procedure_dispatch`, whose arguments belong to a host. */
+static SummaSchemeError summa_scheme_procedure_frame(const SummaSchemeEnvironment env,
+                                                     const SummaSchemeProcedure   proc,
+                                                     const SummaList              args,
+                                                     SummaSchemeEnvironment*      out) {
+    return summa_scheme_procedure_frame_impl(env, proc, args, false, out);
 }
 
 /* Calls a procedure and runs it to a value -- the entry point for a host that
