@@ -42,15 +42,70 @@ typedef struct SummaSchemeEnvironment_t* SummaSchemeEnvironment;
 
 SUMMA_ARRAY_GENERATE_TYPE_DEF(SummaList, list, SummaSchemeValue)
 
+/* Copying a value is a *retain* of whatever it points at, not a walk of it. A
+ * list, a vector and a string each carry a reference-counted payload, so two
+ * values naming the same list are two handles on one allocation and copying one
+ * costs a counter increment whatever its length.
+ *
+ * The four scalars are copied by value because they are the value; a symbol is
+ * an interned pointer and owned by nobody. A procedure is the one arm still
+ * copied deep -- see "A value is copied by retaining it" in BUILTINS.md for
+ * what that is waiting on.
+ *
+ * Sharing is only safe because nothing here can mutate a payload in place.
+ * `cdr` builds a new list, `set-car!`/`set-cdr!` do not exist, and `set!`
+ * replaces a binding's value rather than editing one. Anything added later that
+ * writes through a payload becomes visible through every other handle to it,
+ * and has to answer for that. */
 SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSchemeValue* src);
 bool             summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeValue* right);
 
-/* Mirrors summa_scheme_value_copy: both are deep, so a copied container owns
- * its elements and can outlive whatever built it. Builtins depend on that --
- * arguments are released as soon as dispatch returns.
+/* Mirrors summa_scheme_value_copy: a release of the payloads that one retains,
+ * so the last handle to a list is what walks and frees it. Builtins depend on
+ * the pairing -- arguments are released as soon as dispatch returns, and a
+ * builtin that hands back something built out of an argument has taken its own
+ * reference by then.
  *
- * A procedure's captured environment is borrowed, and not freed here. */
+ * A procedure's captured environment is released here; its body and parameter
+ * list are freed outright, since a procedure value still owns those alone. */
 void summa_scheme_value_free(SummaSchemeValue* value);
+
+/* ── Counted payloads ──────────────────────────────────────────────────────
+ *
+ * The list behind a list or vector value, and the string behind a string value,
+ * are reference counted the way an environment is: the counter is carved out of
+ * the same allocation, so the handle *is* the payload and `handle - 1` is its
+ * `RefCount`. There is no second indirection and no second malloc.
+ *
+ * The rule, and it is the only one: **a `SummaList` that a `SummaSchemeValue`
+ * points at comes from here.** Handing `summa_make_scheme_list` a plain
+ * `summa_list_make_empty()` puts a value in front of an allocation with no
+ * counter in front of it, and the first release walks off the front of the heap
+ * block.
+ *
+ * Two `SummaList`s in this header are deliberately *not* counted, and neither
+ * is ever inside a value: a procedure's `body`, which a procedure value owns
+ * outright, and the argument list a call evaluates into, which is a C local for
+ * the length of that call. */
+SummaList summa_scheme_list_make_empty(void);
+SummaList summa_scheme_list_make_with_capacity(size_t capacity);
+
+/* A counted list holding `count` values, *moved* in as they stand: whatever
+ * payload each one carries changes hands rather than being retained a second
+ * time, so the caller must not free them afterwards. */
+SummaList summa_scheme_list_make(const SummaSchemeValue* values, size_t count);
+SummaList summa_scheme_list_retain(SummaList list);
+void      summa_scheme_list_release(SummaList list);
+
+SummaString summa_scheme_string_make(const char* value);
+SummaString summa_scheme_string_retain(SummaString string);
+void        summa_scheme_string_release(SummaString string);
+
+/* How many handles a payload has. For tests that want to read sharing directly
+ * rather than infer it from a leak, and for nothing else -- a program deciding
+ * anything on a reference count is a program with a bug in it. */
+size_t summa_scheme_list_ref_count(SummaList list);
+size_t summa_scheme_string_ref_count(SummaString string);
 
 typedef enum {
     SummaSchemeBooleanType,
@@ -191,18 +246,22 @@ typedef struct {
 } SummaSchemeString;
 
 #define summa_make_scheme_string(val) \
-    ((SummaSchemeValue){.type = SummaSchemeStringType, .value.string = {.value = summa_string_make(val)}})
+    ((SummaSchemeValue){.type = SummaSchemeStringType, .value.string = {.value = summa_scheme_string_make(val)}})
 
 typedef struct {
     SummaList value;
 } SummaSchemeList;
 
+/* `val` is a counted list -- summa_scheme_list_make_empty or
+ * summa_scheme_list_make_with_capacity -- and the value takes the reference it
+ * was handed. See "Counted payloads" above. */
 #define summa_make_scheme_list(val) ((SummaSchemeValue){.type = SummaSchemeListType, .value.list = {.value = (val)}})
 
 typedef struct {
     SummaList value;
 } SummaSchemeVector;
 
+/* Counted, exactly as summa_make_scheme_list is. */
 #define summa_make_scheme_vector(val) \
     ((SummaSchemeValue){.type = SummaSchemeVectorType, .value.vector = {.value = (val)}})
 
@@ -559,8 +618,8 @@ summa_scheme_evaluate_arguments(const SummaSchemeEnvironment env, const SummaLis
  * without ever being freed. */
 void summa_scheme_argument_list_free(SummaList args);
 
-/* Frees a list and every value in it. Defined further down, but the reader
- * needs it to unwind a half-built list when a datum inside it fails. */
+/* Frees an *uncounted* list and every value in it -- a procedure body, or a
+ * list a caller built by hand. A counted payload is released, not freed. */
 static void summa_scheme_list_free_deep(SummaList list);
 
 /* What one step of evaluation produced: either the value itself, or an
@@ -1073,7 +1132,7 @@ static SummaSchemeError summa_scheme_read_datum(
         if (quoted_kind != SummaSchemeReadDatumValue) {
             return summa_make_error("summa_scheme_read - quote has nothing to quote");
         }
-        SummaList form = summa_list_make_empty();
+        const SummaList form = summa_scheme_list_make_with_capacity(2);
         summa_list_push(form, &summa_make_scheme_symbol("quote"));
         summa_list_push(form, &quoted);
         *out = summa_make_scheme_list(form);
@@ -1108,7 +1167,7 @@ summa_scheme_read_sequence(const char* input, const char** rest, SummaList* out,
     /* `items` is owned until it is handed over, so the error paths unwind it
      * along with every datum already pushed into it. */
     SummaSchemeError err    = summa_success();
-    SummaList        items  = summa_list_make_empty();
+    SummaList        items  = summa_scheme_list_make_empty();
     const char*      cursor = input;
     for (;;) {
         SummaSchemeValue         item = {};
@@ -1134,7 +1193,7 @@ summa_scheme_read_sequence(const char* input, const char** rest, SummaList* out,
         *rest = cursor;
     }
 cleanup:
-    summa_scheme_list_free_deep(items);
+    summa_scheme_list_release(items);
     return err;
 }
 
@@ -1340,8 +1399,10 @@ static SummaSchemeError summa_scheme_evaluate_step(const SummaSchemeEnvironment 
         return summa_scheme_value_copy(out, in);
     } break;
     case SummaSchemeStringType: {
-        *out = summa_make_scheme_string(in->value.string.value->value);
-    } break;
+        /* Self-evaluating, and now a retain rather than a second copy of the
+         * characters -- the same move the vector arm below already made. */
+        return summa_scheme_value_copy(out, in);
+    }
     case SummaSchemeSymbolType: {
         /* A symbol in evaluated position is a variable reference, so an unbound
          * one is an error rather than a value. Quoting is what yields the
@@ -1537,24 +1598,140 @@ static SummaSchemeError summa_scheme_print_styled(const SummaSchemeValue value, 
     return summa_success();
 }
 
+#pragma region Counted payloads
+
+/* The counter sits one header ahead of the handle, exactly as it does for an
+ * environment: `ref_count` carves the payload out of the same allocation, so
+ * `ref_count_as(rc, SummaList)` is `rc + 1` and this is the way back. */
+static RefCount summa_scheme_list_ref(const SummaList list) {
+    return (RefCount)(void*)list - 1;
+}
+
+static RefCount summa_scheme_string_ref(const SummaString string) {
+    return (RefCount)(void*)string - 1;
+}
+
+/* Runs on the release that reaches zero. Reentrant, like the environment
+ * destructor and for the same reason: an element may hold the last handle to a
+ * list of its own. The recursion is the value's own nesting, which
+ * SUMMA_SCHEME_READ_MAX_DEPTH bounds for anything that came from source. */
+static void summa_scheme_list_destroy(void* payload) {
+    const SummaList list = payload;
+    for (size_t i = 0; i < list->length; i++) {
+        summa_scheme_value_free(&list->value[i]);
+    }
+    /* Disposed rather than freed: the header is the payload of the block
+     * ref_count is about to free, so only the element storage was ever a
+     * separate allocation. */
+    summa_list_dispose(list);
+}
+
+static void summa_scheme_string_destroy(void* payload) {
+    summa_string_dispose((SummaString)payload);
+}
+
+SummaList summa_scheme_list_make_with_capacity(const size_t capacity) {
+    const RefCount ref = ref_count_make_with_destructor(SummaList_t, summa_scheme_list_destroy);
+    assert(ref);
+    const SummaList list = ref_count_as(ref, SummaList);
+    summa_list_init_with_capacity(list, capacity);
+    return list;
+}
+
+/* Capacity zero, not SUMMA_ARRAY_DEFAULT_CAPACITY: `()` is a value programs
+ * produce constantly -- every `cdr` that exhausts a list makes one -- and an
+ * empty list has no business owning eight slots. The first push grows it the
+ * ordinary way. */
+SummaList summa_scheme_list_make_empty(void) {
+    return summa_scheme_list_make_with_capacity(0);
+}
+
+SummaList summa_scheme_list_make(const SummaSchemeValue* values, const size_t count) {
+    const SummaList list = summa_scheme_list_make_with_capacity(count);
+    for (size_t i = 0; i < count; i++) {
+        summa_list_push(list, (SummaSchemeValue*)&values[i]);
+    }
+    return list;
+}
+
+SummaList summa_scheme_list_retain(const SummaList list) {
+    if (list) {
+        ref_count_acquire(summa_scheme_list_ref(list));
+    }
+    return list;
+}
+
+void summa_scheme_list_release(const SummaList list) {
+    if (list) {
+        ref_count_release(summa_scheme_list_ref(list));
+    }
+}
+
+SummaString summa_scheme_string_make(const char* value) {
+    const RefCount ref = ref_count_make_with_destructor(SummaString_t, summa_scheme_string_destroy);
+    assert(ref);
+    const SummaString string = ref_count_as(ref, SummaString);
+    summa_string_init(string, value);
+    return string;
+}
+
+SummaString summa_scheme_string_retain(const SummaString string) {
+    if (string) {
+        ref_count_acquire(summa_scheme_string_ref(string));
+    }
+    return string;
+}
+
+void summa_scheme_string_release(const SummaString string) {
+    if (string) {
+        ref_count_release(summa_scheme_string_ref(string));
+    }
+}
+
+size_t summa_scheme_list_ref_count(const SummaList list) {
+    return list ? summa_scheme_list_ref(list)->count : 0;
+}
+
+size_t summa_scheme_string_ref_count(const SummaString string) {
+    return string ? summa_scheme_string_ref(string)->count : 0;
+}
+
+#pragma endregion Counted payloads
+
 /* summa_list_copy moves elements as raw bytes, leaving the copy sharing every
  * handle inside them. These walk instead.
  *
+ * Only two callers are left, and both are places a payload genuinely has to be
+ * duplicated rather than shared: a procedure's body, which is not counted, and
+ * `list`, whose whole job is to build a new one out of its operands. Copying a
+ * *value* stopped walking anything when payloads became counted.
+ *
  * The length is known before the first element is copied, so the destination is
- * one exact allocation. Built from `make_empty` it was five reallocs and 320
- * bytes of slack for a 128-element list -- the same over-allocation
- * `summa_scheme_environment_make_with_capacity` stopped paying for a frame, on
- * the one remaining copy that is O(the list). */
-static SummaList summa_scheme_list_copy_deep(const SummaList src) {
-    if (!src) {
-        return nullptr;
-    }
-    SummaList dest = summa_list_make_with_capacity(src->length);
+ * one exact allocation. */
+static void summa_scheme_list_copy_elements(const SummaList dest, const SummaList src) {
     for (size_t i = 0; i < src->length; i++) {
         SummaSchemeValue element;
         summa_scheme_value_copy(&element, &src->value[i]);
         summa_list_push(dest, &element);
     }
+}
+
+static SummaList summa_scheme_list_copy_deep(const SummaList src) {
+    if (!src) {
+        return nullptr;
+    }
+    const SummaList dest = summa_list_make_with_capacity(src->length);
+    summa_scheme_list_copy_elements(dest, src);
+    return dest;
+}
+
+/* The same, into a payload a value can hold. */
+static SummaList summa_scheme_list_copy_deep_counted(const SummaList src) {
+    if (!src) {
+        return nullptr;
+    }
+    const SummaList dest = summa_scheme_list_make_with_capacity(src->length);
+    summa_scheme_list_copy_elements(dest, src);
     return dest;
 }
 
@@ -1582,6 +1759,24 @@ static void summa_scheme_list_free_deep(SummaList list) {
     summa_list_free(list);
 }
 
+/* The control build the measurement needed, and the only thing it changes is
+ * whether a payload is shared or duplicated. Everything else -- the counter in
+ * front of every payload, the allocation shape, the call graph -- is identical,
+ * because a freshly built payload starts at a count of one and the release in
+ * summa_scheme_value_free reclaims it either way. Defining this makes copying a
+ * value walk it again, which is what the evaluator did before #40.
+ *
+ * Not a supported configuration. It exists so a benchmark can answer "is this
+ * the sharing, or is it the compiler?" without comparing two different
+ * binaries' worth of code. */
+#ifdef SUMMA_SCHEME_COPY_PAYLOADS
+#define SUMMA_SCHEME_LIST_SHARE(src) summa_scheme_list_copy_deep_counted(src)
+#define SUMMA_SCHEME_STRING_SHARE(src) summa_scheme_string_make((src)->value)
+#else
+#define SUMMA_SCHEME_LIST_SHARE(src) summa_scheme_list_retain(src)
+#define SUMMA_SCHEME_STRING_SHARE(src) summa_scheme_string_retain(src)
+#endif
+
 SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSchemeValue* src) {
     SummaSchemeValueType type = src->type;
     dest->type                = type;
@@ -1599,7 +1794,10 @@ SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSche
         dest->value = src->value;
     } break;
     case SummaSchemeListType: {
-        dest->value.list.value = summa_scheme_list_copy_deep(src->value.list.value);
+        /* One counter increment, whatever the list's length. This is the whole
+         * of #40: a variable reference used to walk and reallocate the value it
+         * named, once per mention. */
+        dest->value.list.value = SUMMA_SCHEME_LIST_SHARE(src->value.list.value);
     } break;
     case SummaSchemeProcedureType: {
         /* dest's handles are whatever the caller happened to have there, so
@@ -1622,7 +1820,7 @@ SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSche
         }
     } break;
     case SummaSchemeStringType: {
-        dest->value.string.value = summa_string_make(src->value.string.value->value);
+        dest->value.string.value = SUMMA_SCHEME_STRING_SHARE(src->value.string.value);
     } break;
     case SummaSchemeSymbolType: {
         /* Interned, so the copy is the pointer. Nothing to allocate here and
@@ -1630,7 +1828,7 @@ SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSche
         dest->value.symbol.value = src->value.symbol.value;
     } break;
     case SummaSchemeVectorType: {
-        dest->value.vector.value = summa_scheme_list_copy_deep(src->value.vector.value);
+        dest->value.vector.value = SUMMA_SCHEME_LIST_SHARE(src->value.vector.value);
     } break;
     default: {
         return summa_make_error("summa_scheme_value_copy - Invalid scheme type provided");
@@ -1641,7 +1839,9 @@ SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSche
 }
 
 /* Releases a handle and nulls it, so a double free through the same value is a
- * no-op rather than a crash. */
+ * no-op rather than a crash. The name is older than the counting: for the three
+ * counted payloads `free_fn` gives back one reference, and the free is whatever
+ * the last one triggers. */
 #define SUMMA_SCHEME_FREE_HANDLE(handle, free_fn) \
     do {                                          \
         if (handle) {                             \
@@ -1667,7 +1867,7 @@ void summa_scheme_value_free(SummaSchemeValue* value) {
          * mirror of summa_scheme_value_copy's symbol case. */
     } break;
     case SummaSchemeListType: {
-        SUMMA_SCHEME_FREE_HANDLE(value->value.list.value, summa_scheme_list_free_deep);
+        SUMMA_SCHEME_FREE_HANDLE(value->value.list.value, summa_scheme_list_release);
     } break;
     case SummaSchemeProcedureType: {
         /* A procedure can carry no bindings or no body, so each handle is
@@ -1684,10 +1884,10 @@ void summa_scheme_value_free(SummaSchemeValue* value) {
         SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.body, summa_scheme_list_free_deep);
     } break;
     case SummaSchemeStringType: {
-        SUMMA_SCHEME_FREE_HANDLE(value->value.string.value, summa_string_free);
+        SUMMA_SCHEME_FREE_HANDLE(value->value.string.value, summa_scheme_string_release);
     } break;
     case SummaSchemeVectorType: {
-        SUMMA_SCHEME_FREE_HANDLE(value->value.vector.value, summa_scheme_list_free_deep);
+        SUMMA_SCHEME_FREE_HANDLE(value->value.vector.value, summa_scheme_list_release);
     } break;
     }
 }
@@ -1788,13 +1988,44 @@ SUMMA_ARRAY_GENERATE_TYPE(SummaSchemeEnvironmentList, environment_list, SummaSch
  * summa_scheme_value_free that follows has nothing left to give back.
  *
  * The invariant, stated once: a reference this enumerates is a reference
- * summa_scheme_value_copy acquired and summa_scheme_value_free would release.
- * Adding a value type that can carry an environment means adding it here in the
- * same commit. */
+ * summa_scheme_value_copy acquired and summa_scheme_value_free would release,
+ * and it enumerates each such reference exactly once. Adding a value type that
+ * can carry an environment means adding it here in the same commit.
+ *
+ * ── What a shared payload does to that ─────────────────────────────────────
+ *
+ * "Exactly once" is what counted payloads put under pressure. A list holds one
+ * reference to the closure of a procedure inside it, however many values name
+ * that list -- so two environments binding the same list would each enumerate
+ * the same single reference, and step 2 of trial deletion would subtract two
+ * for a count of one. That is edge-set drift by another route, and it frees
+ * live environments.
+ *
+ * The rule that fixes it is one line in
+ * summa_scheme_counted_list_for_each_environment_edge: **descend into a payload
+ * only when this is its sole handle.** A payload with one handle belongs to
+ * whoever is enumerating -- nothing else can reach it, so its references are
+ * theirs and counting them once is exact. A payload with more is nobody's in
+ * particular, so it is not descended into at all, and the environments it
+ * points at keep the references it holds. They then look held-from-outside,
+ * which is the conservative answer: they are marked as roots and survive.
+ *
+ * What that costs is a cycle that runs through a *shared* payload -- a list
+ * bound under two names, holding a procedure whose closure binds it. That one
+ * is not reclaimed. It is not reachable by counting either, and the alternative
+ * is making a payload a node of the collector's graph in its own right, which
+ * is a larger change than #40 and wants its own issue. The two traversals stay
+ * one traversal, which is the property that was worth protecting.
+ *
+ * The condition is stable across a pass: nothing between the subtract step and
+ * the break step changes a payload's count. */
 typedef void (*SummaSchemeEnvironmentEdgeFn)(SummaSchemeEnvironment* slot, void* context);
 
 static void
 summa_scheme_list_for_each_environment_edge(SummaList list, SummaSchemeEnvironmentEdgeFn visit, void* context);
+
+static void
+summa_scheme_counted_list_for_each_environment_edge(SummaList list, SummaSchemeEnvironmentEdgeFn visit, void* context);
 
 static void summa_scheme_value_for_each_environment_edge(SummaSchemeValue*            value,
                                                          SummaSchemeEnvironmentEdgeFn visit,
@@ -1802,15 +2033,16 @@ static void summa_scheme_value_for_each_environment_edge(SummaSchemeValue*      
     switch (value->type) {
     case SummaSchemeProcedureType: {
         visit(&value->value.procedure.closure, context);
-        /* The body is deep-copied like any other list, so a procedure value
-         * sitting in it carries a counted closure of its own. */
+        /* The body is the one list inside a value that is *not* counted -- a
+         * procedure value owns its body outright and copying one still walks
+         * it -- so it is descended into unconditionally, as it always was. */
         summa_scheme_list_for_each_environment_edge(value->value.procedure.body, visit, context);
     } break;
     case SummaSchemeListType: {
-        summa_scheme_list_for_each_environment_edge(value->value.list.value, visit, context);
+        summa_scheme_counted_list_for_each_environment_edge(value->value.list.value, visit, context);
     } break;
     case SummaSchemeVectorType: {
-        summa_scheme_list_for_each_environment_edge(value->value.vector.value, visit, context);
+        summa_scheme_counted_list_for_each_environment_edge(value->value.vector.value, visit, context);
     } break;
     case SummaSchemeBooleanType:
     case SummaSchemeCharacterType:
@@ -1829,6 +2061,19 @@ summa_scheme_list_for_each_environment_edge(SummaList list, SummaSchemeEnvironme
     for (size_t i = 0; list && i < list->length; i++) {
         summa_scheme_value_for_each_environment_edge(&list->value[i], visit, context);
     }
+}
+
+/* Sole handle or nothing -- see "What a shared payload does to that" above.
+ * This is also what keeps teardown honest: nulling a closure slot inside a
+ * payload that somebody else still holds would take that procedure's captured
+ * environment away from them. */
+static void summa_scheme_counted_list_for_each_environment_edge(SummaList                    list,
+                                                                SummaSchemeEnvironmentEdgeFn visit,
+                                                                void*                        context) {
+    if (!list || summa_scheme_list_ref(list)->count != 1) {
+        return;
+    }
+    summa_scheme_list_for_each_environment_edge(list, visit, context);
 }
 
 static void summa_scheme_environment_for_each_edge(const SummaSchemeEnvironment env,
@@ -2821,7 +3066,7 @@ static SummaSchemeError summa_scheme_builtin_cons(const SummaList args, SummaSch
     }
 
     const SummaList  tail  = args->value[1].value.list.value;
-    const SummaList  items = summa_list_make_empty();
+    const SummaList  items = summa_scheme_list_make_with_capacity(1 + (tail ? tail->length : 0));
     SummaSchemeValue head;
     summa_scheme_value_copy(&head, &args->value[0]);
     summa_list_push(items, &head);
@@ -2854,7 +3099,7 @@ static SummaSchemeError summa_scheme_builtin_cdr(const SummaList args, SummaSche
     }
 
     const SummaList source = args->value[0].value.list.value;
-    const SummaList items  = summa_list_make_empty();
+    const SummaList items  = summa_scheme_list_make_with_capacity(source->length - 1);
     for (size_t i = 1; i < source->length; i++) {
         SummaSchemeValue element;
         summa_scheme_value_copy(&element, &source->value[i]);
@@ -2867,7 +3112,7 @@ static SummaSchemeError summa_scheme_builtin_cdr(const SummaList args, SummaSche
 /* Variadic all the way down: `(list)` is `()`. Every operand is deep-copied,
  * so a list built out of other lists owns its elements outright. */
 static SummaSchemeError summa_scheme_builtin_list(const SummaList args, SummaSchemeValue* out) {
-    *out = summa_make_scheme_list(summa_scheme_list_copy_deep(args));
+    *out = summa_make_scheme_list(summa_scheme_list_copy_deep_counted(args));
     return summa_success();
 }
 

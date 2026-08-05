@@ -17,9 +17,20 @@ SUMMA_ARRAY_GENERATE_TYPE_DEF(SummaString, string, char)
 SummaString summa_string_make(const char* value);
 SummaString summa_string_make_empty();
 void        summa_string_clear(SummaString str);
-void        summa_string_copy(SummaString dest, SummaString src);
-void        summa_string_copy_cstr(SummaString dest, const char* src);
-void        summa_string_free(SummaString str);
+
+/* The same string, in a header the caller already has -- `summa_array_init_with_capacity`
+ * and `summa_array_dispose` for a type whose invariant the raw pair would not
+ * maintain. `init` fills a header it did not allocate; `dispose` releases the
+ * characters and leaves the header behind emptied.
+ *
+ * One caveat `dispose` inherits from the array: an emptied string has a null
+ * `value`, so it is no longer a readable C string. That is teardown's business
+ * and nobody else's -- an owner disposing a string is on its way out. */
+void summa_string_init(SummaString str, const char* value);
+void summa_string_dispose(SummaString str);
+void summa_string_copy(SummaString dest, SummaString src);
+void summa_string_copy_cstr(SummaString dest, const char* src);
+void summa_string_free(SummaString str);
 
 /* Appends one character, growing as needed. */
 void summa_string_push(SummaString str, char c);
@@ -54,6 +65,17 @@ SummaString summa_string_make_empty() {
      * string would mean `value` reads as whatever was on the heap. */
     str->value[0] = '\0';
     return str;
+}
+/* Capacity is length + 1 rather than length, which is the string invariant: the
+ * terminator has to have somewhere to live. */
+void summa_string_init(SummaString str, const char* value) {
+    const size_t length = strlen(value);
+    summa_array_init_with_capacity((SummaArray)str, sizeof(char), length + 1);
+    memcpy(str->value, value, length + 1);
+    str->length = length;
+}
+void summa_string_dispose(SummaString str) {
+    summa_array_dispose((SummaArray)str);
 }
 void summa_string_clear(SummaString str) {
     summa_array_clear((SummaArray)str);

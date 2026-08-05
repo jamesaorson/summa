@@ -11,27 +11,28 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define SCOPED_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaList, var, init, summa_list_free)
+#define SCOPED_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaList, var, init, summa_scheme_list_release)
+
+/* A procedure's body is the one list inside a value that is not counted, so it
+ * is built and released the plain way -- and shallowly, because the values in
+ * this one are borrowed from scopes of their own. */
+#define SCOPED_BODY(var, init) SUMMA_TEST_SCOPED_VALUE(SummaList, var, init, summa_list_free)
 
 /* A symbol names an interned record the table owns, so the list is all there is
  * to release -- where this used to need a destructor that drained a string out
  * of every element first. */
 #define SCOPED_SYMBOL_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaSchemeSymbolList, var, init, summa_symbol_list_free)
 
-/* A string scheme value owns the SummaString the make macro builds for it, so
- * scoping the value has to reach one level in to release it. A *symbol* value
- * does not: its name is interned, and summa_scheme_value_free is the whole
- * story -- a no-op that stays correct if that ever changes. */
-static void free_scheme_string(SummaSchemeValue value) {
-    summa_string_free(value.value.string.value);
-}
-
+/* One destructor for every value type now. A string value used to need its own,
+ * reaching a level in to free the SummaString the make macro built; the string
+ * is a counted payload and summa_scheme_value_free releases it like any other.
+ * A *symbol* value stays a no-op through the same call: its name is interned. */
 static void free_scheme_value(SummaSchemeValue value) {
     summa_scheme_value_free(&value);
 }
 
 #define SCOPED_SCHEME_STRING(var, cstr) \
-    SUMMA_TEST_SCOPED_VALUE(SummaSchemeValue, var, summa_make_scheme_string(cstr), free_scheme_string)
+    SUMMA_TEST_SCOPED_VALUE(SummaSchemeValue, var, summa_make_scheme_string(cstr), free_scheme_value)
 
 #define SCOPED_SCHEME_SYMBOL(var, cstr) \
     SUMMA_TEST_SCOPED_VALUE(SummaSchemeValue, var, summa_make_scheme_symbol(cstr), free_scheme_value)
@@ -112,7 +113,7 @@ void test_scheme_print_character_inside_a_list() {
     };
     SUMMA_TEST_SCOPED_FILE(written)
     SUMMA_TEST_SCOPED_FILE(displayed)
-    SCOPED_LIST(list, summa_list_make(values, sizeof(values) / sizeof(values[0]))) {
+    SCOPED_LIST(list, summa_scheme_list_make(values, sizeof(values) / sizeof(values[0]))) {
         const SummaSchemeValue value = summa_make_scheme_list(list);
 
         SUMMA_TEST_ASSERT(!summa_scheme_print(value, written.file).had);
@@ -157,28 +158,28 @@ void test_scheme_print_integer() {
 }
 
 void test_scheme_print_list() {
-    SCOPED_LIST(nested, summa_list_make_empty()) {
-        SummaSchemeValue values[5] = {
-            summa_make_scheme_boolean(true),
-            summa_make_scheme_integer(420),
-            summa_make_scheme_floating(3.14),
-            summa_make_scheme_list(nested),
-            summa_make_scheme_boolean(false),
-        };
-        SUMMA_TEST_SCOPED_FILE(f)
-        SCOPED_LIST(list, summa_list_make(values, sizeof(values) / sizeof(values[0]))) {
-            SummaSchemeValue value = summa_make_scheme_list(list);
-            SummaSchemeError error = summa_scheme_print(value, f.file);
-            SUMMA_TEST_ASSERT(!error.had);
-            SUMMA_TEST_ASSERT_FILE_EQ_STR(f, "(#t 420 3.140000 () #f)");
-        }
+    /* The nested list belongs to the outer one from the moment it is handed
+     * over, so it gets no scope of its own -- one owner per payload. */
+    SummaSchemeValue values[5] = {
+        summa_make_scheme_boolean(true),
+        summa_make_scheme_integer(420),
+        summa_make_scheme_floating(3.14),
+        summa_make_scheme_list(summa_scheme_list_make_empty()),
+        summa_make_scheme_boolean(false),
+    };
+    SUMMA_TEST_SCOPED_FILE(f)
+    SCOPED_LIST(list, summa_scheme_list_make(values, sizeof(values) / sizeof(values[0]))) {
+        SummaSchemeValue value = summa_make_scheme_list(list);
+        SummaSchemeError error = summa_scheme_print(value, f.file);
+        SUMMA_TEST_ASSERT(!error.had);
+        SUMMA_TEST_ASSERT_FILE_EQ_STR(f, "(#t 420 3.140000 () #f)");
     }
 }
 
 void test_scheme_print_procedure() {
     // TODO: Finish
     SCOPED_SYMBOL_LIST(def_bindings, summa_symbol_list_make_empty())
-    SCOPED_LIST(def_body, summa_list_make_empty())
+    SCOPED_BODY(def_body, summa_list_make_empty())
     SCOPED_SYMBOL_LIST(body_proc_bindings, summa_symbol_list_make_empty()) {
         SummaSchemeValue def = summa_make_scheme_procedure(summa_scheme_symbol_intern("add2"), def_bindings, def_body);
 
@@ -226,7 +227,7 @@ void test_scheme_print_vector() {
         summa_make_scheme_integer(420),
     };
     SUMMA_TEST_SCOPED_FILE(f)
-    SCOPED_LIST(vector, summa_list_make(values, sizeof(values) / sizeof(values[0]))) {
+    SCOPED_LIST(vector, summa_scheme_list_make(values, sizeof(values) / sizeof(values[0]))) {
         SummaSchemeValue value = summa_make_scheme_vector(vector);
         SummaSchemeError error = summa_scheme_print(value, f.file);
         SUMMA_TEST_ASSERT(!error.had);
