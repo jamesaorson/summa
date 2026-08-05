@@ -53,7 +53,7 @@ void test_environment_set_then_get() {
         bind_integer(env, "x", 42);
         SUMMA_TEST_ASSERT_EQ(1u, env->bindings->length);
 
-        SummaSchemeBinding out;
+        SummaSchemeBinding out   = {};
         SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of("x"), &out);
         SUMMA_TEST_ASSERT(!error.had);
         SUMMA_TEST_ASSERT_EQ(42, out.value.value.integer.value);
@@ -70,7 +70,7 @@ void test_environment_set_existing_name_rebinds_in_place() {
          * kept reporting 1. */
         SUMMA_TEST_ASSERT_EQ(1u, env->bindings->length);
 
-        SummaSchemeBinding out;
+        SummaSchemeBinding out   = {};
         SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of("x"), &out);
         SUMMA_TEST_ASSERT(!error.had);
         SUMMA_TEST_ASSERT_EQ(2, out.value.value.integer.value);
@@ -88,7 +88,7 @@ void test_environment_rebinding_releases_the_previous_value() {
 
         SUMMA_TEST_ASSERT_EQ(1u, env->bindings->length);
 
-        SummaSchemeBinding out;
+        SummaSchemeBinding out   = {};
         SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of("s"), &out);
         SUMMA_TEST_ASSERT(!error.had);
         SUMMA_TEST_ASSERT_EQ_STR("second", out.value.value.string.value->value);
@@ -101,7 +101,7 @@ void test_environment_distinct_names_both_bound() {
         bind_integer(env, "y", 2);
         SUMMA_TEST_ASSERT_EQ(2u, env->bindings->length);
 
-        SummaSchemeBinding out;
+        SummaSchemeBinding out = {};
         SUMMA_TEST_ASSERT(!summa_scheme_environment_get(env, symbol_of("x"), &out).had);
         SUMMA_TEST_ASSERT_EQ(1, out.value.value.integer.value);
         SUMMA_TEST_ASSERT(!summa_scheme_environment_get(env, symbol_of("y"), &out).had);
@@ -111,7 +111,7 @@ void test_environment_distinct_names_both_bound() {
 
 void test_environment_get_unbound_name_errors() {
     SCOPED_ENV(env) {
-        SummaSchemeBinding out;
+        SummaSchemeBinding out   = {};
         SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of("nope"), &out);
         SUMMA_TEST_ASSERT(error.had);
         SUMMA_TEST_ASSERT_EQ_STR("Unbound variable: nope", error.message);
@@ -125,7 +125,7 @@ void test_environment_get_falls_through_to_parent() {
         SummaSchemeEnvironment child = summa_scheme_environment_make(parent);
         SUMMA_TEST_ASSERT_EQ(parent, child->parent);
 
-        SummaSchemeBinding out;
+        SummaSchemeBinding out   = {};
         SummaSchemeError   error = summa_scheme_environment_get(child, symbol_of("outer"), &out);
         SUMMA_TEST_ASSERT(!error.had);
         SUMMA_TEST_ASSERT_EQ(7, out.value.value.integer.value);
@@ -141,7 +141,7 @@ void test_environment_child_binding_shadows_parent() {
         SummaSchemeEnvironment child = summa_scheme_environment_make(parent);
         bind_integer(child, "x", 2);
 
-        SummaSchemeBinding out;
+        SummaSchemeBinding out = {};
         SUMMA_TEST_ASSERT(!summa_scheme_environment_get(child, symbol_of("x"), &out).had);
         SUMMA_TEST_ASSERT_EQ(2, out.value.value.integer.value);
         /* The parent's own binding is untouched by the shadow. */
@@ -162,7 +162,8 @@ void test_environment_freeing_child_leaves_parent_alive() {
         /* parent is borrowed by the child, never owned, so it is still usable
          * here. The reverse -- a parent outliving its children -- is the
          * constraint callers currently have to honour by hand. */
-        SummaSchemeBinding out;
+
+        SummaSchemeBinding out = {};
         SUMMA_TEST_ASSERT(!summa_scheme_environment_get(parent, symbol_of("x"), &out).had);
         SUMMA_TEST_ASSERT_EQ(1, out.value.value.integer.value);
     }
