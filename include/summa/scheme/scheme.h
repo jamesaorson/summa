@@ -240,17 +240,56 @@ typedef struct {
 
 SUMMA_ARRAY_GENERATE_TYPE(SummaSchemeBindingList, binding_list, SummaSchemeBinding)
 
-/* The trailing four fields are the cycle collector's, not the evaluator's: the
+/* An interned name to its position in a frame's `bindings`, for the frames big
+ * enough that finding one by scanning has stopped being the cheaper answer.
+ *
+ * Open addressing with linear probing, `mask + 1` slots, and the slots in the
+ * same allocation as the header. A slot holds one *more* than the position it
+ * points at, so a zeroed table reads as empty and no separate sentinel is
+ * needed. `mask + 1` is a power of two, so the probe starts at a mask of the
+ * name's hash rather than at a modulo.
+ *
+ * A name carries its own djb2 hash from interning, so nothing here hashes
+ * characters -- the key is a pointer and the hash was computed once, for the
+ * life of the process, the first time the name was seen. */
+typedef struct {
+    uint32_t mask;
+    uint32_t slots[];
+} SummaSchemeBindingIndex;
+
+/* The bindings themselves are always in `bindings`, in the order they were
+ * pushed, whether or not `index` exists -- the index is an accelerator over
+ * that array and never the storage for it. Two things follow, and both are the
+ * reason it is built this way:
+ *
+ * - summa_scheme_environment_for_each_edge still enumerates exactly one array,
+ *   so it stays the single traversal the cycle collector's arithmetic depends
+ *   on. There is no second walk to fall out of step with it, and an index
+ *   holds positions rather than values, so it has no edges of its own.
+ * - a frame small enough to scan carries a null pointer and nothing else. The
+ *   index is built when a frame's binding count reaches
+ *   SUMMA_SCHEME_ENVIRONMENT_INDEX_MIN, which nearly every call frame never
+ *   does.
+ *
+ * The trailing four fields are the cycle collector's, not the evaluator's: the
  * registry links every live environment into one intrusive list, and the two
  * scratch fields are written and read within a single collection pass. See
- * "Cycle collection" in the implementation section. */
+ * "Cycle collection" in the implementation section.
+ *
+ * `trial_count` is a uint32_t and not a size_t, which is what pays for `index`:
+ * it holds a copy of the environment's reference count for the length of one
+ * pass, and four billion live references to one frame is not a number this
+ * evaluator can reach. Packing it against `reachable` leaves the struct exactly
+ * the size it was before the index existed, so a call frame costs the same
+ * bytes it did -- which, after #35, is a number worth not spending. */
 struct SummaSchemeEnvironment_t {
-    SummaSchemeBindingList bindings;
-    SummaSchemeEnvironment parent;
+    SummaSchemeBindingList   bindings;
+    SummaSchemeEnvironment   parent;
+    SummaSchemeBindingIndex* index;
 
     SummaSchemeEnvironment registry_previous;
     SummaSchemeEnvironment registry_next;
-    size_t                 trial_count;
+    uint32_t               trial_count;
     bool                   reachable;
 };
 
@@ -1812,12 +1851,162 @@ summa_scheme_list_for_each_environment_edge(SummaList list, SummaSchemeEnvironme
     }
 }
 
+/* The one enumeration of an environment's outgoing references, and the reason
+ * the binding index is an index and not a second place to keep bindings: this
+ * still walks `bindings`, all of it, in order. An index holds positions in that
+ * array rather than values, so there is nothing in it for the collector to
+ * subtract and nothing here to keep in step. */
 static void summa_scheme_environment_for_each_edge(const SummaSchemeEnvironment env,
                                                    SummaSchemeEnvironmentEdgeFn visit,
                                                    void*                        context) {
     visit(&env->parent, context);
     for (size_t i = 0; env->bindings && i < env->bindings->length; i++) {
         summa_scheme_value_for_each_environment_edge(&env->bindings->value[i].value, visit, context);
+    }
+}
+
+/* ── The binding index ─────────────────────────────────────────────────────
+ *
+ * A frame's bindings are found by scanning them, and for nearly every frame
+ * that is the right answer: a procedure of two parameters compares two
+ * pointers, and a hash table in front of that would cost an allocation, a
+ * rebuild on every push and a cache miss on every lookup to save one compare.
+ * The frame it is *not* the right answer for is the global one, which holds the
+ * twenty-three builtins plus every top-level `define` a program makes and is
+ * scanned front to back on every reference that reaches it.
+ *
+ * So the index is built per frame and only once a frame has enough bindings to
+ * pay for it. Below the threshold `index` is null and the lookup is exactly the
+ * scan it always was, one predictable branch later.
+ *
+ * The threshold is a compile-time knob rather than a constant so that a build
+ * can be measured against another one; `benchmarks/scheme` is what chose the
+ * default. */
+#ifndef SUMMA_SCHEME_ENVIRONMENT_INDEX_MIN
+#define SUMMA_SCHEME_ENVIRONMENT_INDEX_MIN 32
+#endif
+
+/* The smallest table worth allocating, and every larger one is a doubling of
+ * it. A power of two is not a nicety here: the probe wraps with a mask, so a
+ * count that is not one would leave slots unreachable and a full-looking table
+ * that never terminates. */
+#define SUMMA_SCHEME_ENVIRONMENT_INDEX_MIN_SLOTS 32
+
+/* Slots enough for `count` bindings at a load factor of one half. Half full is
+ * the point at which linear probing still finds a name in a small constant
+ * number of steps rather than in a run of them. */
+static size_t summa_scheme_binding_index_slots_for(const size_t count) {
+    size_t slots = SUMMA_SCHEME_ENVIRONMENT_INDEX_MIN_SLOTS;
+    while (slots < 2 * count) {
+        slots *= 2;
+    }
+    return slots;
+}
+
+/* Places `position` under `name`. Only ever called with a name the index does
+ * not already hold -- a rebind keeps its position and its name, so it does not
+ * reach here -- and only on a table with a free slot, which the load factor
+ * guarantees, so the probe terminates. */
+static void summa_scheme_binding_index_place(SummaSchemeBindingIndex* const index,
+                                             const SummaSchemeSymbolName    name,
+                                             const size_t                   position) {
+    size_t slot = (size_t)name->hash & index->mask;
+    while (index->slots[slot] != 0) {
+        slot = (slot + 1) & index->mask;
+    }
+    index->slots[slot] = (uint32_t)(position + 1);
+}
+
+/* Discards whatever index `env` has and builds one holding every binding it
+ * currently has, with room for `count` of them. */
+static void summa_scheme_environment_index_rebuild(const SummaSchemeEnvironment env, const size_t count) {
+    const size_t slots = summa_scheme_binding_index_slots_for(count);
+    /* A position is stored in a uint32_t, which bounds a frame at four billion
+     * bindings -- two hundred gigabytes of binding storage before the index
+     * could be wrong. */
+    assert(env->bindings->length < UINT32_MAX);
+
+    SummaSchemeBindingIndex* const index = calloc(1, sizeof(SummaSchemeBindingIndex) + slots * sizeof(uint32_t));
+    assert(index);
+    index->mask = (uint32_t)(slots - 1);
+
+    for (size_t i = 0; i < env->bindings->length; i++) {
+        summa_scheme_binding_index_place(index, env->bindings->value[i].name, i);
+    }
+
+    free(env->index);
+    env->index = index;
+}
+
+/* Gives `env` an index able to hold `count` bindings, if a frame of that size
+ * and that position is worth indexing at all.
+ *
+ * Two conditions, and the second is the one worth explaining. A frame is
+ * indexed only if it is a *root* -- an environment with no parent, which in a
+ * running program is the global frame and nothing else. Not because a large
+ * `let` could not benefit, but because consulting an index costs a test, and a
+ * test in the chain walk is paid once per frame per reference by every program
+ * whether or not any frame is indexed. `benchmarks/scheme` prices that test at
+ * 7-13% of every case, against a 22% win on the one case it helps. Confining
+ * the index to the root moves the test out of the loop, where it is paid once
+ * per lookup.
+ *
+ * Below the threshold, or anywhere but the root, this does nothing at all --
+ * which is the case every call frame is in. */
+static void summa_scheme_environment_index_ensure(const SummaSchemeEnvironment env, const size_t count) {
+    if (count < SUMMA_SCHEME_ENVIRONMENT_INDEX_MIN || env->parent != nullptr) {
+        return;
+    }
+    if (env->index && 2 * count <= (size_t)env->index->mask + 1) {
+        return;
+    }
+    summa_scheme_environment_index_rebuild(env, count);
+}
+
+/* The lookup for a frame with no index: the scan this evaluator has always
+ * done, one interned pointer against another. */
+static bool summa_scheme_binding_scan(const SummaSchemeBindingList bindings,
+                                      const SummaSchemeSymbolName  name,
+                                      size_t* const                out_position) {
+    for (size_t i = 0; i < bindings->length; i++) {
+        if (bindings->value[i].name == name) {
+            *out_position = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The lookup the index exists for. `bindings` is passed alongside because a
+ * slot names a position in it and the name there is what settles a collision --
+ * two names that hash alike are two entries, never one. */
+static bool summa_scheme_binding_index_find(const SummaSchemeBindingIndex* const index,
+                                            const SummaSchemeBindingList         bindings,
+                                            const SummaSchemeSymbolName          name,
+                                            size_t* const                        out_position) {
+    size_t slot = (size_t)name->hash & index->mask;
+    for (uint32_t stored = index->slots[slot]; stored != 0; stored = index->slots[slot]) {
+        if (bindings->value[stored - 1].name == name) {
+            *out_position = stored - 1;
+            return true;
+        }
+        slot = (slot + 1) & index->mask;
+    }
+    return false;
+}
+
+/* Adds a binding `env` does not already hold, keeping the index in step. The
+ * push is what owns the binding's value from here on; the index only learns
+ * where it landed. */
+static void summa_scheme_environment_bind_new(const SummaSchemeEnvironment env, SummaSchemeBinding binding) {
+    const size_t position = env->bindings->length;
+    /* Sized for the binding about to go in, and grown ahead of the push rather
+     * than after it, so a rebuild only ever sees bindings that are already in
+     * the array and the new one is placed exactly once. */
+    summa_scheme_environment_index_ensure(env, position + 1);
+    summa_binding_list_push(env->bindings, &binding);
+    if (env->index) {
+        summa_scheme_binding_index_place(env->index, binding.name, position);
     }
 }
 
@@ -1928,6 +2117,10 @@ static void summa_scheme_environment_destroy(void* payload) {
     }
     summa_binding_list_free(env->bindings);
     env->bindings = nullptr;
+    /* Positions into an array that no longer exists. Nothing was owned by the
+     * index, so this is the whole of its teardown. */
+    free(env->index);
+    env->index = nullptr;
     /* The block itself is ref_count's to free, immediately after this returns. */
 }
 
@@ -1953,8 +2146,16 @@ SummaSchemeEnvironment summa_scheme_environment_make_with_capacity(SummaSchemeEn
      * that binds nothing, which is what a call to a nullary procedure is. */
     env->bindings    = summa_binding_list_make_with_capacity(count);
     env->parent      = summa_scheme_environment_acquire(parent);
+    env->index       = nullptr;
     env->trial_count = 0;
     env->reachable   = false;
+
+    /* A frame worth indexing is indexed at the moment it is made, for the same
+     * reason its binding storage is sized here: the count is already known and
+     * a second trip through the allocator buys nothing. A frame under the
+     * threshold -- which is nearly all of them -- gets no index and no
+     * allocation. */
+    summa_scheme_environment_index_ensure(env, count);
 
     env->registry_previous = nullptr;
     env->registry_next     = SUMMA_SCHEME_ENVIRONMENT_REGISTRY;
@@ -1969,6 +2170,7 @@ SummaSchemeEnvironment summa_scheme_environment_make_with_capacity(SummaSchemeEn
 
 void summa_scheme_environment_reserve(const SummaSchemeEnvironment env, const size_t count) {
     summa_binding_list_reserve(env->bindings, count);
+    summa_scheme_environment_index_ensure(env, count);
 }
 
 SummaSchemeEnvironment summa_scheme_environment_make_global(void) {
@@ -2039,7 +2241,8 @@ size_t summa_scheme_collect_cycles(void) {
     SUMMA_SCHEME_GC_RUNNING = true;
 
     for (SummaSchemeEnvironment env = SUMMA_SCHEME_ENVIRONMENT_REGISTRY; env; env = env->registry_next) {
-        env->trial_count = summa_scheme_environment_ref(env)->count;
+        assert(summa_scheme_environment_ref(env)->count <= UINT32_MAX);
+        env->trial_count = (uint32_t)summa_scheme_environment_ref(env)->count;
         env->reachable   = false;
     }
     for (SummaSchemeEnvironment env = SUMMA_SCHEME_ENVIRONMENT_REGISTRY; env; env = env->registry_next) {
@@ -2106,37 +2309,56 @@ void summa_scheme_environment_init_global(SummaSchemeEnvironment env) {
      * it the ordinary way. */
     summa_scheme_environment_reserve(env, summa_scheme_builtin_count());
 
-    const SummaSchemeBindingList bindings = env->bindings;
     for (size_t i = 0; i < summa_scheme_builtin_count(); i++) {
         /* The binding's name and the procedure's name are now deliberately the
          * *same* record. They used to be separate strings so that freeing one
-         * did not free the other; an interned name is freed by nobody. */
+         * did not free the other; an interned name is freed by nobody.
+         *
+         * Through bind_new rather than straight into the array, because the
+         * global frame is the one frame that is always indexed and the index
+         * has to learn about these twenty-three the same way it learns about
+         * every top-level `define` that follows them. */
         const SummaSchemeSymbolName name = summa_scheme_builtin_symbol(i);
-        summa_binding_list_push(bindings,
-                                &summa_scheme_binding_make(
-                                    name, summa_make_scheme_procedure(name, summa_symbol_list_make_empty(), nullptr)));
+        summa_scheme_environment_bind_new(
+            env,
+            summa_scheme_binding_make(name,
+                                      summa_make_scheme_procedure(name, summa_symbol_list_make_empty(), nullptr)));
     }
 }
 
+/* Rebinding in place, which is what `set` does when the name is already here
+ * and what `set!` is built on: the binding keeps its position and its name, so
+ * an index that named that position still does. Only the value moves. */
+static void summa_scheme_binding_rebind(SummaSchemeBinding* const binding, const SummaSchemeValue value) {
+    /* The old value is being replaced, so it goes before the overwrite rather
+     * than after it. The incoming value is moved in rather than copied. The two
+     * names are the same interned record -- there is no duplicate left to
+     * release, which is what this branch used to have to remember. */
+    summa_scheme_value_free(&binding->value);
+    binding->value = value;
+}
+
+/* Where `name` sits in this one frame, by whichever route the frame has. One
+ * test, not one per frame -- environment_set and environment_assign look in a
+ * single frame at a time, so the test is already outside any loop. */
+static bool summa_scheme_environment_find_local(const SummaSchemeEnvironment env,
+                                                const SummaSchemeSymbolName  name,
+                                                size_t* const                out_position) {
+    return env->index ? summa_scheme_binding_index_find(env->index, env->bindings, name, out_position)
+                      : summa_scheme_binding_scan(env->bindings, name, out_position);
+}
+
 SummaSchemeError summa_scheme_environment_set(const SummaSchemeEnvironment env, SummaSchemeBinding newBinding) {
-    for (size_t i = 0; i < env->bindings->length; i++) {
+    size_t position;
+    if (summa_scheme_environment_find_local(env, newBinding.name, &position)) {
         /* By reference: a copy of the element would take the rebinding with it
          * when it went out of scope, leaving the environment untouched. */
-        SummaSchemeBinding* binding = &env->bindings->value[i];
-        if (binding->name == newBinding.name) {
-            /* The old value is being replaced, so it goes before the overwrite
-             * rather than after it. The incoming value is moved in rather than
-             * copied. The two names are the same interned record -- there is no
-             * duplicate left to release, which is what this branch used to have
-             * to remember. */
-            summa_scheme_value_free(&binding->value);
-            binding->value = newBinding.value;
-            return summa_success();
-        }
+        summa_scheme_binding_rebind(&env->bindings->value[position], newBinding.value);
+        return summa_success();
     }
     /* Pushed by value: the environment takes ownership of the binding's value
      * from here on. */
-    summa_binding_list_push(env->bindings, &newBinding);
+    summa_scheme_environment_bind_new(env, newBinding);
     return summa_success();
 }
 
@@ -2160,16 +2382,47 @@ SummaSchemeError summa_scheme_environment_get_owner(const SummaSchemeEnvironment
     /* Iterative rather than recursive over the chain: the owner is what the
      * loop already has to carry, and a deep lexical nesting costs no stack.
      *
-     * Still a linear scan per frame -- that is #33's to fix -- but the
-     * comparison inside it is now one pointer against another rather than a
-     * strcmp, so the walk pays for its length and not for its names. */
-    for (SummaSchemeEnvironment scope = env; scope; scope = scope->parent) {
+     * The chain and its root are two loops rather than one, and that split is
+     * the measurement rather than a preference. Asking each frame in the chain
+     * whether it is indexed costs 7-13% of every case in `benchmarks/scheme` --
+     * a test on the hottest path in the evaluator, taken once per frame per
+     * reference, to answer "no" for every frame but one. Asking the root
+     * instead costs one test per lookup, and the root is the frame that is
+     * ever big. See "A big frame is indexed" in BUILTINS.md.
+     *
+     * So the chain below is byte for byte the scan it always was: a pointer
+     * compare per binding, and nothing else per frame. */
+    SummaSchemeEnvironment scope = env;
+    for (; scope->parent; scope = scope->parent) {
         const SummaSchemeBindingList bindings = scope->bindings;
         for (size_t i = 0; i < bindings->length; i++) {
             if (bindings->value[i].name == name) {
                 *out       = bindings->value[i];
                 *out_owner = scope;
                 return summa_success();
+            }
+        }
+    }
+
+    /* The root: the global frame, holding the builtins and every top-level
+     * `define`, reached by every reference that was not bound closer. Probed
+     * when it has grown enough to be worth indexing, scanned when it has not. */
+    {
+        const SummaSchemeBindingList bindings = scope->bindings;
+        if (scope->index) {
+            size_t position;
+            if (summa_scheme_binding_index_find(scope->index, bindings, name, &position)) {
+                *out       = bindings->value[position];
+                *out_owner = scope;
+                return summa_success();
+            }
+        } else {
+            for (size_t i = 0; i < bindings->length; i++) {
+                if (bindings->value[i].name == name) {
+                    *out       = bindings->value[i];
+                    *out_owner = scope;
+                    return summa_success();
+                }
             }
         }
     }
@@ -2180,14 +2433,11 @@ SummaSchemeError summa_scheme_environment_get_owner(const SummaSchemeEnvironment
 SummaSchemeError summa_scheme_environment_assign(const SummaSchemeEnvironment env,
                                                  const SummaSchemeSymbolName  name,
                                                  SummaSchemeValue             value) {
-    for (size_t i = 0; i < env->bindings->length; i++) {
-        /* By reference: a copy would carry the rebinding out of scope. */
-        SummaSchemeBinding* binding = &env->bindings->value[i];
-        if (binding->name == name) {
-            summa_scheme_value_free(&binding->value);
-            binding->value = value;
-            return summa_success();
-        }
+    /* By reference: a copy would carry the rebinding out of scope. */
+    size_t position;
+    if (summa_scheme_environment_find_local(env, name, &position)) {
+        summa_scheme_binding_rebind(&env->bindings->value[position], value);
+        return summa_success();
     }
     if (env->parent) {
         return summa_scheme_environment_assign(env->parent, name, value);
