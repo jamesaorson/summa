@@ -382,6 +382,13 @@ binding per call. See
 [A name is a pointer](#a-name-is-a-pointer-and-the-table-that-makes-it-one).
 `tests/scheme/scheme.symbols.test.c` is where the table's behaviour is pinned.
 
+A call frame's two arrays are sized to the call rather than to
+`SUMMA_ARRAY_DEFAULT_CAPACITY`. The arity is known before either exists — the
+operator's position in the form gives the argument count, and the arity check
+gives the binding count — so both are one exact allocation, and a call that
+binds nothing allocates no element storage at all. See
+[A frame is the size of its call](#a-frame-is-the-size-of-its-call).
+
 **Not done.** `/`, the equality procedures, the remaining type predicates,
 `display` and `newline`.
 
@@ -399,36 +406,79 @@ built by the ordinary build and run by hand (`make benchmark`), never by
 `ctest`, because a benchmark asserts nothing and a CI run should not pay for
 one. Every case comes in a pair or a series, since the reading that travels
 between machines is the *ratio* between two of them. What it says about the
-evaluator as it stands, Release, on an M-series Mac — and, in the middle column,
-what it said before interning landed:
+evaluator as it stands, Release, on an M-series Mac, with the two columns to its
+left being what it said before interning and before frames were right-sized:
 
-| Reading                                        | Before interning               | Now                              |
-| ---------------------------------------------- | ------------------------------ | -------------------------------- |
-| a user procedure call                          | ~1.2 µs, 15 allocations, 2 KB  | ~0.63 µs, 11 allocations, 1.9 KB |
-| a call binding nothing, over the loop it is in | +356 ns, +5 allocations, 832 B | +186 ns, +5 allocations, 832 B   |
-| each argument bound                            | +123 ns, +2 allocations        | +38 ns, **+0 allocations**       |
-| 32 lexical frames rather than 1                | +52% per call                  | +40% per call                    |
-| the last of 256 globals rather than of 8       | +117% per call                 | +41% per call                    |
-| a 128-element list argument rather than 1      | 3.3× the time, 9.5× the bytes  | 5.2× the time, 9.7× the bytes    |
+| Reading                                        | Before interning               | Interned                         | Now                                |
+| ---------------------------------------------- | ------------------------------ | -------------------------------- | ---------------------------------- |
+| a user procedure call                          | ~1.2 µs, 15 allocations, 2 KB  | ~0.63 µs, 11 allocations, 1.9 KB | ~0.63 µs, 11 allocations, 0.64 KB  |
+| a call binding nothing, over the loop it is in | +356 ns, +5 allocations, 832 B | +186 ns, +5 allocations, 832 B   | +140 ns, +3 allocations, **128 B** |
+| each argument bound                            | +123 ns, +2 allocations        | +38 ns, **+0 allocations**       | +57 ns, +0 allocations, +88 B      |
+| 32 lexical frames rather than 1                | +52% per call                  | +40% per call                    | +42% per call                      |
+| the last of 256 globals rather than of 8       | +117% per call                 | +41% per call                    | +41% per call                      |
+| a 128-element list argument rather than 1      | 3.3× the time, 9.5× the bytes  | 5.2× the time, 9.7× the bytes    | 5.1× the time, 16.5× the bytes     |
 
-Read the last row the right way round: the absolute cost of the 128-element case
-fell by 21%, and the *ratio* got worse because what interning removed was fixed
-per-call cost. What is left in that case is the O(length) copy, which is exactly
-what the next two buys are about.
+Two rows want reading carefully.
 
-Two of those readings say something the original list of three did not.
+The 128-element case's *ratios* keep getting worse while its absolute cost keeps
+falling, and both times for the same reason: what interning removed, and what
+right-sizing removed, was **fixed** per-call cost. What is left in that case is
+the O(length) copy, which is exactly what the next two buys are about.
+
+And an argument now costs 88 bytes to bind where a moment ago it cost nothing.
+Nothing got worse — 88 is 48 bytes of `SummaSchemeBinding` plus 40 of
+`SummaSchemeValue` argument slot, which is what a binding always was. It used to
+be prepaid out of eight slots the call never asked for, so the third argument
+looked free while the first had already been charged 832 bytes for all eight.
+The cost is the same cost, now visible and now proportional.
+
+One of those readings says something the original list of three did not.
 **Arguments are copied twice per call, not once** —
 `summa_scheme_procedure_frame` makes one, and `summa_scheme_evaluate`'s symbol
 case makes the other, since a variable reference hands back a copy of the bound
 value. Moving arguments into the frame removes one of the two; the per-call cost
-of a list argument stays linear in its length until the other goes as well. And
-**most of what a frame costs is capacity nobody asked for**: of the 832 bytes a
-call binding nothing allocates, 704 are element storage at
-`SUMMA_ARRAY_DEFAULT_CAPACITY` — eight `SummaSchemeValue` slots of argument list
-and eight `SummaSchemeBinding` slots of frame bindings, for a call with no
-arguments and no bindings. Interning did not touch either number, and both are
-now a larger share of what a call costs than they were. Sizing those two arrays
-to the arity the evaluator already knows is the cheapest buy left.
+of a list argument stays linear in its length until the other goes as well.
+
+### A frame is the size of its call
+
+The benchmark found a fourth buy the list of three did not have, and it has been
+taken. A call binding nothing used to allocate 832 bytes, of which 704 were
+element storage at `SUMMA_ARRAY_DEFAULT_CAPACITY` — eight `SummaSchemeValue`
+slots of argument list and eight `SummaSchemeBinding` slots of frame bindings,
+for a call with no arguments and no bindings. Both arrays grew to eight because
+that was the default, not because anything asked for eight.
+
+Nothing had to be discovered to fix it, only used. `summa_scheme_evaluate_arguments`
+knows the argument count from the form before it evaluates the first one;
+`summa_scheme_procedure_frame` has just checked the arity against the parameter
+list. `summa/array.h` grew `summa_array_make_with_capacity` and
+`summa_array_reserve` — a capacity of zero allocates no element storage at all,
+which is the whole of the nullary case — and `summa_scheme_environment_make` is
+now `summa_scheme_environment_make_with_capacity(parent, 0)`, with the two
+callers that know better saying so. `let` reserves its clause count and the
+global frame reserves the builtins.
+
+That leaves **128 bytes** for a frame that binds nothing: the environment, and
+the two `SummaArray_t` headers. Growth is unaffected — an exact fit is full, so
+a body with an internal `define` doubles from there the ordinary way, and
+`tests/scheme/scheme.environment.test.c` pins that alongside the sizing itself.
+
+The honest part: **wall time rose by up to 5% on the cases that still allocate
+a frame**, and fell 5% on the one case where the allocation goes away entirely.
+That is the allocator rather than the evaluator, and the benchmark can show it —
+a build carrying every one of these code changes but with the old capacities
+restored tracks the baseline to within a percent on every case, so the block
+sizes are the only thing that moved. Darwin's `malloc` charges slightly more for
+a 144-byte block than for a 384-byte one in this access pattern. The trade taken
+is up to 5% of time for 27–72% of the bytes, because bytes per call are what
+stop euler 10 and 3% is not.
+
+The reading that points at what to do next is the nullary row: the case that got
+*faster* is the one where a `malloc`/`free` pair disappeared, not the one where
+it shrank. A frame is still five allocations. Folding the binding storage into
+the environment's own block — the trick the interned name already plays with a
+flexible array member — would remove one outright rather than shrink it, and on
+this evidence that is worth more than any amount of sizing.
 
 Walking a list is bounded by memory rather than by `SUMMA_SCHEME_MAX_DEPTH` when
 the walk is written tail recursively; written the other way —
