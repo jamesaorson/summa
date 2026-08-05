@@ -43,6 +43,12 @@ option(
     ${PROJECT_IS_TOP_LEVEL}
 )
 
+option(
+    SUMMA_BUILD_BENCHMARKS
+    "Enable building benchmarks. Built by a normal build so they cannot rot; never run by CTest. Default: ${PROJECT_IS_TOP_LEVEL}. Values: { ON, OFF }."
+    ${PROJECT_IS_TOP_LEVEL}
+)
+
 add_library(summa INTERFACE)
 add_library(summa::summa ALIAS summa)
 
@@ -73,4 +79,8 @@ endif()
 
 if(SUMMA_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+if(SUMMA_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
 endif()

@@ -50,8 +50,20 @@ else
 	exit 1
 endif
 
+.PHONY: benchmark
+benchmark: ## Build and run the scheme evaluator benchmark (BENCHMARK_ARGS="--help" for its options)
+	if [ ! -d "build/$(CMAKE_PRESET)" ]; then
+		echo "No build directory for the $(CMAKE_PRESET) preset yet — configuring first."
+		$(MAKE) configure
+	fi
+	if [ "$(CMAKE_BUILD_TYPE)" != "Release" ]; then
+		echo "Building $(CMAKE_BUILD_TYPE); run 'make benchmark CMAKE_BUILD_TYPE=Release' for numbers worth quoting."
+	fi
+	cmake --build --preset $(CMAKE_PRESET) --target benchmarks.scheme
+	./build/$(CMAKE_PRESET)/benchmarks/benchmarks.scheme $(BENCHMARK_ARGS)
+
 .PHONY: build
-build: ## Build all targets (library is header-only; builds tests and examples)
+build: ## Build all targets (library is header-only; builds tests, examples and benchmarks)
 	cmake --build --preset $(CMAKE_PRESET)
 
 .PHONY: check
