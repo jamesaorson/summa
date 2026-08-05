@@ -277,11 +277,49 @@ The runaway test that used to live in
 the same reason. `(define (loop) (loop))` is a *tail* call, and now runs as the
 correct non-terminating program it always was.
 
-What is *not* optimized is per-call cost. Every call still mallocs a frame,
-copies each argument into it, and allocates a string per binding name, and
-symbols are compared with `strcmp` rather than interned. Tail calls make a
-long-running program terminate; they do not make it fast. `benchmarks/scheme`
-prices each of those four separately — see [Current state](#current-state).
+What is *not* optimized is per-call cost. Every call still mallocs a frame and
+copies each argument into it. Tail calls make a long-running program terminate;
+they do not make it fast. `benchmarks/scheme` prices each of those separately —
+see [Current state](#current-state).
+
+### A name is a pointer, and the table that makes it one
+
+Symbols, binding names and procedure names are **interned**: one canonical
+`SummaSchemeSymbolName` record per distinct name, for the life of the process,
+and every value that uses one borrows a pointer to it. Two things follow, and
+both are the point.
+
+**A name is compared by identity.** `left == right` decides two symbols where
+`strcmp` used to, and that comparison is on the hot path four times over — the
+special-form lookup on the head of every combination, the builtin dispatch, the
+binding walk in `summa_scheme_environment_get_owner`, and `equal?` on a symbol.
+The evaluator's own vocabulary is interned once by
+`summa_scheme_symbols_ensure`, so those tables compare against records rather
+than against literals.
+
+**A name is never allocated twice.** Binding a parameter used to allocate a
+`SummaString` for a name that already existed in the source; it now copies a
+pointer. Nothing owns a name, so `summa_scheme_value_copy` copies it and
+`summa_scheme_value_free` has nothing to give back — which is the rule to keep
+in mind when adding a value type that carries one. It is *not* an edge for
+`summa_scheme_environment_for_each_edge`: a name is uncounted and unowned, so
+there is nothing there for the collector to subtract.
+
+Three details worth knowing about the table itself:
+
+- **A record never moves.** The bucket array doubles, but a growth rewires
+  `next` and nothing else, which is what makes an interned pointer safe to hold
+  indefinitely.
+- **It cannot be emptied, deliberately.** Every symbol in every live value
+  points into it, so a call that released it would invalidate all of them at
+  once — and a table that *can* be emptied invites exactly that call. Its size
+  is bounded by the distinct identifiers a program mentions rather than by how
+  long the program runs. `summa_scheme_symbol_interned_count` reports it.
+- **`SummaHashMap` was the other candidate and does not fit.** It keys on the
+  hash code alone, so two colliding names would be one entry; and its key must
+  be a fixed size, which a name is not. `summa_hash` — djb2, from
+  `summa/hash_set/hash_set.h` — is the part that *is* reused, and each record
+  caches its own hash so a hash-based binding lookup has nothing to recompute.
 
 ### `set-car!` and `set-cdr!` have nothing to mutate
 
@@ -338,47 +376,59 @@ Proper tail calls, through the trampoline in `summa_scheme_evaluate_inner`. Nine
 of the ten euler suites run and pass; a tail loop iterating a million deep is
 ordinary now, where the old ceiling was 998.
 
+Symbols, binding names and procedure names are interned, so a name is a pointer
+compare and costs one allocation for the life of the process rather than one per
+binding per call. See
+[A name is a pointer](#a-name-is-a-pointer-and-the-table-that-makes-it-one).
+`tests/scheme/scheme.symbols.test.c` is where the table's behaviour is pinned.
+
 **Not done.** `/`, the equality procedures, the remaining type predicates,
 `display` and `newline`.
 
 The remaining structural gap is not depth any more, it is *speed*, and euler
 problem 10 is where it shows: roughly 10^8 Scheme-level calls, each one
-mallocing a frame, deep copying its arguments into it, allocating a string per
-binding name, and finding both the procedure and each parameter by `strcmp` down
-a linked chain of environments. That case is left un-run for exactly that
-reason. Symbol interning, arguments moved rather than copied, and a binding
-lookup that is not a linear scan are the three obvious buys — and all three want
-a measurement first rather than a guess.
+mallocing a frame and deep copying its arguments into it, and finding both the
+procedure and each parameter by walking a linked chain of environments. That
+case is left un-run for exactly that reason. Arguments moved rather than copied
+and a binding lookup that is not a linear scan are what is left of the three
+obvious buys — and both want a measurement first rather than a guess.
 
-That measurement exists now. `benchmarks/scheme` is a set of programs written to
+That measurement exists. `benchmarks/scheme` is a set of programs written to
 isolate one cost each, printing wall time, allocations and bytes per call; it is
 built by the ordinary build and run by hand (`make benchmark`), never by
 `ctest`, because a benchmark asserts nothing and a CI run should not pay for
 one. Every case comes in a pair or a series, since the reading that travels
 between machines is the *ratio* between two of them. What it says about the
-evaluator as it stands, Release, on an M-series Mac:
+evaluator as it stands, Release, on an M-series Mac — and, in the middle column,
+what it said before interning landed:
 
-| Reading                                        | Baseline                       |
-| ---------------------------------------------- | ------------------------------ |
-| a user procedure call                          | ~1.2 µs, 15 allocations, 2 KB  |
-| a call binding nothing, over the loop it is in | +328 ns, +5 allocations, 832 B |
-| each argument bound                            | +136 ns, +2 allocations        |
-| 32 lexical frames rather than 1                | +50% per call                  |
-| the last of 256 globals rather than of 8       | +113% per call                 |
-| a 128-element list argument rather than 1      | 3.3× the time, 9.5× the bytes  |
+| Reading                                        | Before interning               | Now                              |
+| ---------------------------------------------- | ------------------------------ | -------------------------------- |
+| a user procedure call                          | ~1.2 µs, 15 allocations, 2 KB  | ~0.63 µs, 11 allocations, 1.9 KB |
+| a call binding nothing, over the loop it is in | +356 ns, +5 allocations, 832 B | +186 ns, +5 allocations, 832 B   |
+| each argument bound                            | +123 ns, +2 allocations        | +38 ns, **+0 allocations**       |
+| 32 lexical frames rather than 1                | +52% per call                  | +40% per call                    |
+| the last of 256 globals rather than of 8       | +117% per call                 | +41% per call                    |
+| a 128-element list argument rather than 1      | 3.3× the time, 9.5× the bytes  | 5.2× the time, 9.7× the bytes    |
 
-Two of those say something the list of three did not. **Arguments are copied
-twice per call, not once** — `summa_scheme_procedure_frame` makes one, and
-`summa_scheme_evaluate`'s symbol case makes the other, since a variable
-reference hands back a copy of the bound value. Moving arguments into the frame
-removes one of the two; the per-call cost of a list argument stays linear in its
-length until the other goes as well. And **most of what a frame costs is
-capacity nobody asked for**: of the 832 bytes a call binding nothing allocates,
-704 are element storage at `SUMMA_ARRAY_DEFAULT_CAPACITY` — eight
-`SummaSchemeValue` slots of argument list and eight `SummaSchemeBinding` slots
-of frame bindings, for a call with no arguments and no bindings. Sizing those
-two arrays to the arity the evaluator already knows is a fourth buy, cheaper
-than any of the three, and the benchmark found it rather than the list did.
+Read the last row the right way round: the absolute cost of the 128-element case
+fell by 21%, and the *ratio* got worse because what interning removed was fixed
+per-call cost. What is left in that case is the O(length) copy, which is exactly
+what the next two buys are about.
+
+Two of those readings say something the original list of three did not.
+**Arguments are copied twice per call, not once** —
+`summa_scheme_procedure_frame` makes one, and `summa_scheme_evaluate`'s symbol
+case makes the other, since a variable reference hands back a copy of the bound
+value. Moving arguments into the frame removes one of the two; the per-call cost
+of a list argument stays linear in its length until the other goes as well. And
+**most of what a frame costs is capacity nobody asked for**: of the 832 bytes a
+call binding nothing allocates, 704 are element storage at
+`SUMMA_ARRAY_DEFAULT_CAPACITY` — eight `SummaSchemeValue` slots of argument list
+and eight `SummaSchemeBinding` slots of frame bindings, for a call with no
+arguments and no bindings. Interning did not touch either number, and both are
+now a larger share of what a call costs than they were. Sizing those two arrays
+to the arity the evaluator already knows is the cheapest buy left.
 
 Walking a list is bounded by memory rather than by `SUMMA_SCHEME_MAX_DEPTH` when
 the walk is written tail recursively; written the other way —

@@ -11,17 +11,17 @@
     SUMMA_TEST_SCOPED_VALUE( \
         SummaSchemeEnvironment, var, summa_scheme_environment_make_empty(), summa_scheme_environment_free)
 
-#define SCOPED_STRING(var, init) SUMMA_TEST_SCOPED_VALUE(SummaString, var, init, summa_string_free)
-
-/* set() takes ownership of both halves of the binding, so the name is made
- * fresh at every call site rather than shared. */
+/* No scope around either of these, and that is the point of interning: a name
+ * belongs to the process-wide table for as long as the process lives, so there
+ * is no allocation here for a scope to release. set() takes ownership of the
+ * binding's value and of nothing else. */
 static void bind_integer(SummaSchemeEnvironment env, const char* name, int64_t value) {
-    summa_scheme_environment_set(env,
-                                 summa_scheme_binding_make(summa_string_make(name), summa_make_scheme_integer(value)));
+    summa_scheme_environment_set(
+        env, summa_scheme_binding_make(summa_scheme_symbol_intern(name), summa_make_scheme_integer(value)));
 }
 
-static SummaSchemeSymbol symbol_of(SummaString name) {
-    return (SummaSchemeSymbol){.value = name};
+static SummaSchemeSymbol symbol_of(const char* name) {
+    return (SummaSchemeSymbol){.value = summa_scheme_symbol_intern(name)};
 }
 
 void test_environment_make_empty_starts_unbound() {
@@ -49,21 +49,19 @@ void test_environment_survives_the_block_that_made_it() {
 }
 
 void test_environment_set_then_get() {
-    SCOPED_ENV(env)
-    SCOPED_STRING(lookup, summa_string_make("x")) {
+    SCOPED_ENV(env) {
         bind_integer(env, "x", 42);
         SUMMA_TEST_ASSERT_EQ(1u, env->bindings->length);
 
-        SummaSchemeBinding out;
-        SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of(lookup), &out);
+        SummaSchemeBinding out   = {};
+        SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of("x"), &out);
         SUMMA_TEST_ASSERT(!error.had);
         SUMMA_TEST_ASSERT_EQ(42, out.value.value.integer.value);
     }
 }
 
 void test_environment_set_existing_name_rebinds_in_place() {
-    SCOPED_ENV(env)
-    SCOPED_STRING(lookup, summa_string_make("x")) {
+    SCOPED_ENV(env) {
         bind_integer(env, "x", 1);
         bind_integer(env, "x", 2);
 
@@ -72,68 +70,63 @@ void test_environment_set_existing_name_rebinds_in_place() {
          * kept reporting 1. */
         SUMMA_TEST_ASSERT_EQ(1u, env->bindings->length);
 
-        SummaSchemeBinding out;
-        SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of(lookup), &out);
+        SummaSchemeBinding out   = {};
+        SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of("x"), &out);
         SUMMA_TEST_ASSERT(!error.had);
         SUMMA_TEST_ASSERT_EQ(2, out.value.value.integer.value);
     }
 }
 
 void test_environment_rebinding_releases_the_previous_value() {
-    SCOPED_ENV(env)
-    SCOPED_STRING(lookup, summa_string_make("s")) {
+    SCOPED_ENV(env) {
         /* The displaced string value has to be freed by set(), not orphaned --
          * a leak the leaks(1) run over this binary would catch. */
         summa_scheme_environment_set(
-            env, summa_scheme_binding_make(summa_string_make("s"), summa_make_scheme_string("first")));
+            env, summa_scheme_binding_make(summa_scheme_symbol_intern("s"), summa_make_scheme_string("first")));
         summa_scheme_environment_set(
-            env, summa_scheme_binding_make(summa_string_make("s"), summa_make_scheme_string("second")));
+            env, summa_scheme_binding_make(summa_scheme_symbol_intern("s"), summa_make_scheme_string("second")));
 
         SUMMA_TEST_ASSERT_EQ(1u, env->bindings->length);
 
-        SummaSchemeBinding out;
-        SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of(lookup), &out);
+        SummaSchemeBinding out   = {};
+        SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of("s"), &out);
         SUMMA_TEST_ASSERT(!error.had);
         SUMMA_TEST_ASSERT_EQ_STR("second", out.value.value.string.value->value);
     }
 }
 
 void test_environment_distinct_names_both_bound() {
-    SCOPED_ENV(env)
-    SCOPED_STRING(lookup_x, summa_string_make("x"))
-    SCOPED_STRING(lookup_y, summa_string_make("y")) {
+    SCOPED_ENV(env) {
         bind_integer(env, "x", 1);
         bind_integer(env, "y", 2);
         SUMMA_TEST_ASSERT_EQ(2u, env->bindings->length);
 
-        SummaSchemeBinding out;
-        SUMMA_TEST_ASSERT(!summa_scheme_environment_get(env, symbol_of(lookup_x), &out).had);
+        SummaSchemeBinding out = {};
+        SUMMA_TEST_ASSERT(!summa_scheme_environment_get(env, symbol_of("x"), &out).had);
         SUMMA_TEST_ASSERT_EQ(1, out.value.value.integer.value);
-        SUMMA_TEST_ASSERT(!summa_scheme_environment_get(env, symbol_of(lookup_y), &out).had);
+        SUMMA_TEST_ASSERT(!summa_scheme_environment_get(env, symbol_of("y"), &out).had);
         SUMMA_TEST_ASSERT_EQ(2, out.value.value.integer.value);
     }
 }
 
 void test_environment_get_unbound_name_errors() {
-    SCOPED_ENV(env)
-    SCOPED_STRING(lookup, summa_string_make("nope")) {
-        SummaSchemeBinding out;
-        SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of(lookup), &out);
+    SCOPED_ENV(env) {
+        SummaSchemeBinding out   = {};
+        SummaSchemeError   error = summa_scheme_environment_get(env, symbol_of("nope"), &out);
         SUMMA_TEST_ASSERT(error.had);
         SUMMA_TEST_ASSERT_EQ_STR("Unbound variable: nope", error.message);
     }
 }
 
 void test_environment_get_falls_through_to_parent() {
-    SCOPED_ENV(parent)
-    SCOPED_STRING(lookup, summa_string_make("outer")) {
+    SCOPED_ENV(parent) {
         bind_integer(parent, "outer", 7);
 
         SummaSchemeEnvironment child = summa_scheme_environment_make(parent);
         SUMMA_TEST_ASSERT_EQ(parent, child->parent);
 
-        SummaSchemeBinding out;
-        SummaSchemeError   error = summa_scheme_environment_get(child, symbol_of(lookup), &out);
+        SummaSchemeBinding out   = {};
+        SummaSchemeError   error = summa_scheme_environment_get(child, symbol_of("outer"), &out);
         SUMMA_TEST_ASSERT(!error.had);
         SUMMA_TEST_ASSERT_EQ(7, out.value.value.integer.value);
 
@@ -142,18 +135,17 @@ void test_environment_get_falls_through_to_parent() {
 }
 
 void test_environment_child_binding_shadows_parent() {
-    SCOPED_ENV(parent)
-    SCOPED_STRING(lookup, summa_string_make("x")) {
+    SCOPED_ENV(parent) {
         bind_integer(parent, "x", 1);
 
         SummaSchemeEnvironment child = summa_scheme_environment_make(parent);
         bind_integer(child, "x", 2);
 
-        SummaSchemeBinding out;
-        SUMMA_TEST_ASSERT(!summa_scheme_environment_get(child, symbol_of(lookup), &out).had);
+        SummaSchemeBinding out = {};
+        SUMMA_TEST_ASSERT(!summa_scheme_environment_get(child, symbol_of("x"), &out).had);
         SUMMA_TEST_ASSERT_EQ(2, out.value.value.integer.value);
         /* The parent's own binding is untouched by the shadow. */
-        SUMMA_TEST_ASSERT(!summa_scheme_environment_get(parent, symbol_of(lookup), &out).had);
+        SUMMA_TEST_ASSERT(!summa_scheme_environment_get(parent, symbol_of("x"), &out).had);
         SUMMA_TEST_ASSERT_EQ(1, out.value.value.integer.value);
 
         summa_scheme_environment_free(child);
@@ -161,8 +153,7 @@ void test_environment_child_binding_shadows_parent() {
 }
 
 void test_environment_freeing_child_leaves_parent_alive() {
-    SCOPED_ENV(parent)
-    SCOPED_STRING(lookup, summa_string_make("x")) {
+    SCOPED_ENV(parent) {
         bind_integer(parent, "x", 1);
 
         SummaSchemeEnvironment child = summa_scheme_environment_make(parent);
@@ -171,8 +162,9 @@ void test_environment_freeing_child_leaves_parent_alive() {
         /* parent is borrowed by the child, never owned, so it is still usable
          * here. The reverse -- a parent outliving its children -- is the
          * constraint callers currently have to honour by hand. */
-        SummaSchemeBinding out;
-        SUMMA_TEST_ASSERT(!summa_scheme_environment_get(parent, symbol_of(lookup), &out).had);
+
+        SummaSchemeBinding out = {};
+        SUMMA_TEST_ASSERT(!summa_scheme_environment_get(parent, symbol_of("x"), &out).had);
         SUMMA_TEST_ASSERT_EQ(1, out.value.value.integer.value);
     }
 }

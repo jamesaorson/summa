@@ -9,6 +9,8 @@
 #include <string.h>
 #define SUMMA_ARRAY_IMPLEMENTATION
 #include <summa/array/array.h>
+#define SUMMA_HASH_SET_IMPLEMENTATION
+#include <summa/hash_set/hash_set.h>
 #define SUMMA_REF_COUNT_IMPLEMENTATION
 #include <summa/ref_count/ref_count.h>
 #define SUMMA_STRING_IMPLEMENTATION
@@ -93,12 +95,62 @@ typedef struct {
 #define summa_make_scheme_integer(val) \
     ((SummaSchemeValue){.type = SummaSchemeIntegerType, .value.integer = {.value = (val)}})
 
+/* ── Interned names ────────────────────────────────────────────────────────
+ *
+ * A name -- a symbol, a binding, a procedure's own name -- is one canonical
+ * record for the life of the process, and every value that uses it borrows a
+ * pointer to that record. Two consequences, and both are the point:
+ *
+ * - **A name is compared by identity.** `left == right` decides two symbols,
+ *   where a `SummaString` needed `strcmp` down every frame in the chain.
+ * - **A name is never allocated twice.** Binding a parameter used to allocate a
+ *   fresh string for a name that already existed in the source; now it copies a
+ *   pointer.
+ *
+ * Nothing owns a name, so nothing frees one: `summa_scheme_value_copy` copies
+ * the pointer and `summa_scheme_value_free` has nothing to give back. That is
+ * the one rule to keep in mind when adding a value type that carries a name.
+ *
+ * The record's characters live in the same allocation, so `name->value` reads
+ * as a C string exactly as `SummaString::value` did, and a name costs one
+ * malloc rather than the two a `SummaString` handle plus buffer cost. */
+typedef struct SummaSchemeSymbolName_t SummaSchemeSymbolName_t;
+
+struct SummaSchemeSymbolName_t {
+    /* The next name in this bucket. A growth rewires these; a record's own
+     * address never moves, which is what makes an interned pointer safe to
+     * hold for as long as the process lives. */
+    SummaSchemeSymbolName_t* next;
+    /* djb2 over the characters, computed once at intern time. A hash-based
+     * binding lookup has nothing left to recompute. */
+    SummaHashCode hash;
+    size_t        length;
+    char          value[];
+};
+
+typedef const SummaSchemeSymbolName_t* SummaSchemeSymbolName;
+
+/* The canonical record for `name`, making it if this is the first time it has
+ * been seen. Interning the same characters twice hands back the same pointer
+ * and allocates nothing the second time. */
+SummaSchemeSymbolName summa_scheme_symbol_intern(const char* name);
+
+/* Distinct names interned so far. The table only ever grows, so a test pins
+ * "interning twice allocates once" by reading this either side of the second
+ * intern rather than by counting mallocs. */
+size_t summa_scheme_symbol_interned_count(void);
+
 typedef struct {
-    SummaString value;
+    SummaSchemeSymbolName value;
 } SummaSchemeSymbol;
 
 #define summa_make_scheme_symbol(val) \
-    ((SummaSchemeValue){.type = SummaSchemeSymbolType, .value.symbol = {.value = summa_string_make(val)}})
+    ((SummaSchemeValue){.type = SummaSchemeSymbolType, .value.symbol = {.value = summa_scheme_symbol_intern(val)}})
+
+/* The same, for a name already interned -- which by the time the evaluator is
+ * running is every name it has. */
+#define summa_make_scheme_symbol_name(name_) \
+    ((SummaSchemeValue){.type = SummaSchemeSymbolType, .value.symbol = {.value = (name_)}})
 
 SUMMA_ARRAY_GENERATE_TYPE(SummaSchemeSymbolList, symbol_list, SummaSchemeSymbol)
 
@@ -110,7 +162,7 @@ SUMMA_ARRAY_GENERATE_TYPE(SummaSchemeSymbolList, symbol_list, SummaSchemeSymbol)
  * outlive the call that made it. summa_scheme_value_copy acquires it and
  * summa_scheme_value_free releases it -- see BUILTINS.md. */
 typedef struct {
-    SummaString            name;
+    SummaSchemeSymbolName  name;
     SummaSchemeSymbolList  bindings;
     SummaList              body;
     SummaSchemeEnvironment closure;
@@ -174,9 +226,11 @@ struct SummaSchemeValue {
 
 SUMMA_ARRAY_GENERATE_TYPE_IMPL(SummaList, list, SummaSchemeValue)
 
+/* `name` is interned and therefore borrowed: the environment owns the value and
+ * nothing else. */
 typedef struct {
-    SummaString      name;
-    SummaSchemeValue value;
+    SummaSchemeSymbolName name;
+    SummaSchemeValue      value;
 } SummaSchemeBinding;
 
 #define summa_scheme_binding_make(name_, value_) \
@@ -256,17 +310,18 @@ void summa_scheme_environment_init_global(SummaSchemeEnvironment env);
 #define summa_scheme_environment_make_empty() summa_scheme_environment_make(nullptr)
 
 /* Binds `newBinding` in `env`, replacing any binding of the same name. The
- * environment takes ownership of the binding's name and value on both paths --
- * on a rebind it keeps the name it already had and releases the incoming
- * duplicate, so the caller must not free either after the call. */
+ * environment takes ownership of the binding's *value* -- the name is interned
+ * and belongs to nobody -- so the caller must not free the value after the
+ * call, on either path. */
 SummaSchemeError summa_scheme_environment_set(const SummaSchemeEnvironment env, SummaSchemeBinding newBinding);
 
 SummaSchemeError summa_scheme_environment_get(const SummaSchemeEnvironment env,
                                               const SummaSchemeSymbol      symbol,
                                               SummaSchemeBinding*          out);
 
-SummaSchemeError
-summa_scheme_environment_get_string(const SummaSchemeEnvironment env, const SummaString str, SummaSchemeBinding* out);
+SummaSchemeError summa_scheme_environment_get_name(const SummaSchemeEnvironment env,
+                                                   const SummaSchemeSymbolName  name,
+                                                   SummaSchemeBinding*          out);
 
 /* The same lookup, and also reports *which* environment in the chain held the
  * binding. `*out_owner` is borrowed -- it is an ancestor of `env`, so it lives
@@ -279,15 +334,16 @@ summa_scheme_environment_get_string(const SummaSchemeEnvironment env, const Summ
  * for the duration of the call is the cheap fix; deep-copying the body per
  * iteration is the expensive one. */
 SummaSchemeError summa_scheme_environment_get_owner(const SummaSchemeEnvironment env,
-                                                    const SummaString            str,
+                                                    const SummaSchemeSymbolName  name,
                                                     SummaSchemeBinding*          out,
                                                     SummaSchemeEnvironment*      out_owner);
 
 /* Rebinds a name wherever the chain already holds it, which environment_set
  * deliberately does not do. Takes ownership of `value` only on success; an
  * unbound name is an error and leaves it with the caller. */
-SummaSchemeError
-summa_scheme_environment_assign(const SummaSchemeEnvironment env, const SummaString name, SummaSchemeValue value);
+SummaSchemeError summa_scheme_environment_assign(const SummaSchemeEnvironment env,
+                                                 const SummaSchemeSymbolName  name,
+                                                 SummaSchemeValue             value);
 
 /* #f alone is false. Zero and the empty list are both true. */
 bool summa_scheme_truthy(const SummaSchemeValue* value);
@@ -352,6 +408,119 @@ SummaSchemeError summa_scheme_display(const SummaSchemeValue value, FILE* out);
 
 #define ERROR_MESSAGE_LENGTH 1024
 char ERROR_MESSAGE[ERROR_MESSAGE_LENGTH];
+
+#pragma region Interned names
+
+/* ── The intern table ──────────────────────────────────────────────────────
+ *
+ * Chained buckets, doubling once the population passes the bucket count. A
+ * record is allocated once and never moves -- a growth rewires `next` and
+ * nothing else -- so a pointer handed out by an earlier intern stays good
+ * across every later one. That is the whole reason a value can hold a bare
+ * pointer to a name.
+ *
+ * There is no way to empty this table, and that is deliberate rather than an
+ * omission. Every symbol in every live value points into it, so releasing it
+ * would invalidate all of them at once, and a table that can be emptied invites
+ * exactly that call. It is the bargain a process already makes with its string
+ * literals, and its size is bounded by the distinct identifiers a program
+ * *mentions* rather than by how long the program runs: the euler suites reach a
+ * few dozen names and stay there through 10^8 calls.
+ *
+ * `summa_hash` is the one summa already has -- djb2, from
+ * `summa/hash_set/hash_set.h`. `SummaHashMap` was the other candidate for
+ * storage and is not usable here: it keys on the hash code alone, so two names
+ * that collide would be the same entry, and its key must be a fixed size that a
+ * name does not have.
+ *
+ * Single-threaded, like SUMMA_SCHEME_ENVIRONMENT_REGISTRY and
+ * SUMMA_SCHEME_DEPTH. */
+#define SUMMA_SCHEME_SYMBOL_MIN_BUCKETS 64
+
+static SummaSchemeSymbolName_t** SUMMA_SCHEME_SYMBOL_BUCKETS      = nullptr;
+static size_t                    SUMMA_SCHEME_SYMBOL_BUCKET_COUNT = 0;
+static size_t                    SUMMA_SCHEME_SYMBOL_COUNT        = 0;
+
+size_t summa_scheme_symbol_interned_count(void) {
+    return SUMMA_SCHEME_SYMBOL_COUNT;
+}
+
+/* Interns the names the evaluator itself compares against -- the special forms,
+ * the builtins, `else`, `lambda` -- so those comparisons are pointer equality
+ * too. Defined once both tables are in scope; called from
+ * summa_scheme_symbol_intern, which is the choke point every name goes through,
+ * so anything holding a SummaSchemeSymbolName is running after it. */
+static void summa_scheme_symbols_ensure(void);
+
+/* The two names the evaluator compares against outside of a table: `lambda`,
+ * which every anonymous procedure is called, and `else`, which `cond` looks for
+ * at the head of a clause. */
+static SummaSchemeSymbolName SUMMA_SCHEME_SYMBOL_LAMBDA = nullptr;
+static SummaSchemeSymbolName SUMMA_SCHEME_SYMBOL_ELSE   = nullptr;
+
+/* Power of two, so the bucket index is a mask rather than a modulo. */
+static void summa_scheme_symbol_table_grow(void) {
+    const size_t next_count =
+        SUMMA_SCHEME_SYMBOL_BUCKET_COUNT ? SUMMA_SCHEME_SYMBOL_BUCKET_COUNT * 2 : SUMMA_SCHEME_SYMBOL_MIN_BUCKETS;
+    SummaSchemeSymbolName_t** const next_buckets = calloc(next_count, sizeof(SummaSchemeSymbolName_t*));
+    assert(next_buckets);
+
+    for (size_t i = 0; i < SUMMA_SCHEME_SYMBOL_BUCKET_COUNT; i++) {
+        SummaSchemeSymbolName_t* entry = SUMMA_SCHEME_SYMBOL_BUCKETS[i];
+        while (entry) {
+            SummaSchemeSymbolName_t* const following = entry->next;
+            const size_t                   index     = (size_t)entry->hash & (next_count - 1);
+            entry->next                              = next_buckets[index];
+            next_buckets[index]                      = entry;
+            entry                                    = following;
+        }
+    }
+
+    free(SUMMA_SCHEME_SYMBOL_BUCKETS);
+    SUMMA_SCHEME_SYMBOL_BUCKETS      = next_buckets;
+    SUMMA_SCHEME_SYMBOL_BUCKET_COUNT = next_count;
+}
+
+SummaSchemeSymbolName summa_scheme_symbol_intern(const char* name) {
+    summa_scheme_symbols_ensure();
+
+    if (SUMMA_SCHEME_SYMBOL_BUCKET_COUNT == 0) {
+        summa_scheme_symbol_table_grow();
+    }
+
+    const size_t        length = strlen(name);
+    const SummaHashCode hash   = summa_hash(name, length);
+    const size_t        index  = (size_t)hash & (SUMMA_SCHEME_SYMBOL_BUCKET_COUNT - 1);
+
+    for (SummaSchemeSymbolName_t* entry = SUMMA_SCHEME_SYMBOL_BUCKETS[index]; entry; entry = entry->next) {
+        /* The hash and the length first: both are one comparison, and together
+         * they leave the memcmp running only on a genuine candidate. */
+        if (entry->hash == hash && entry->length == length && memcmp(entry->value, name, length) == 0) {
+            return entry;
+        }
+    }
+
+    /* One allocation, characters included -- against the two a SummaString
+     * costs for its handle and its buffer. */
+    SummaSchemeSymbolName_t* const entry = malloc(sizeof(SummaSchemeSymbolName_t) + length + 1);
+    assert(entry);
+    entry->hash   = hash;
+    entry->length = length;
+    memcpy(entry->value, name, length + 1);
+    entry->next                        = SUMMA_SCHEME_SYMBOL_BUCKETS[index];
+    SUMMA_SCHEME_SYMBOL_BUCKETS[index] = entry;
+    SUMMA_SCHEME_SYMBOL_COUNT++;
+
+    /* One name per bucket on average. Interning is a read-time cost paid once
+     * per distinct name, so the load factor is chosen for lookup rather than
+     * for how often the table is rebuilt. */
+    if (SUMMA_SCHEME_SYMBOL_COUNT > SUMMA_SCHEME_SYMBOL_BUCKET_COUNT) {
+        summa_scheme_symbol_table_grow();
+    }
+    return entry;
+}
+
+#pragma endregion Interned names
 
 SummaSchemeError summa_scheme_procedure_dispatch(SummaSchemeEnvironment env,
                                                  SummaSchemeProcedure   proc,
@@ -421,7 +590,7 @@ typedef SummaSchemeError (*SummaSchemeSpecialFormFn)(const SummaSchemeEnvironmen
                                                      SummaSchemeValue*            out,
                                                      SummaSchemeStep*             step);
 
-static SummaSchemeSpecialFormFn summa_scheme_special_form_lookup(const char* name);
+static SummaSchemeSpecialFormFn summa_scheme_special_form_lookup(SummaSchemeSymbolName name);
 
 /* Evaluates form[start..] for effect and leaves the last expression to the
  * trampoline. The body rule shared by lambda, begin, let, cond, when and
@@ -1083,7 +1252,7 @@ static SummaSchemeError summa_scheme_evaluate_step(const SummaSchemeEnvironment 
              * the application path would evaluate both branches and turn every
              * recursive base case into a loop. */
             const SummaSchemeSpecialFormFn special =
-                summa_scheme_special_form_lookup(form->value[0].value.symbol.value->value);
+                summa_scheme_special_form_lookup(form->value[0].value.symbol.value);
             if (special) {
                 return special(env, form, out, step);
             }
@@ -1319,9 +1488,7 @@ static SummaSchemeError summa_scheme_print_styled(const SummaSchemeValue value, 
         fprintf(out, readable ? "\"%s\"" : "%s", str->value);
     } break;
     case SummaSchemeSymbolType: {
-        SummaSchemeSymbol val = value.value.symbol;
-        SummaString       str = val.value;
-        fprintf(out, "%s", str->value);
+        fprintf(out, "%s", value.value.symbol.value->value);
     } break;
     case SummaSchemeVectorType: {
         SummaSchemeVector val = value.value.vector;
@@ -1358,14 +1525,16 @@ static SummaList summa_scheme_list_copy_deep(const SummaList src) {
     return dest;
 }
 
-static SummaSchemeSymbolList summa_scheme_symbol_list_copy_deep(const SummaSchemeSymbolList src) {
+/* Shallow, unlike its list counterpart, and that is what interning bought: a
+ * parameter name is a pointer into the intern table, so copying a procedure's
+ * parameter list copies pointers rather than allocating a string per name. */
+static SummaSchemeSymbolList summa_scheme_symbol_list_copy(const SummaSchemeSymbolList src) {
     if (!src) {
         return nullptr;
     }
     SummaSchemeSymbolList dest = summa_symbol_list_make_empty();
     for (size_t i = 0; i < src->length; i++) {
-        SummaSchemeSymbol symbol = {.value = summa_string_make(src->value[i].value->value)};
-        summa_symbol_list_push(dest, &symbol);
+        summa_symbol_list_push(dest, &src->value[i]);
     }
     return dest;
 }
@@ -1378,16 +1547,6 @@ static void summa_scheme_list_free_deep(SummaList list) {
         summa_scheme_value_free(&list->value[i]);
     }
     summa_list_free(list);
-}
-
-static void summa_scheme_symbol_list_free_deep(SummaSchemeSymbolList symbols) {
-    if (!symbols) {
-        return;
-    }
-    for (size_t i = 0; i < symbols->length; i++) {
-        summa_string_free(symbols->value[i].value);
-    }
-    summa_symbol_list_free(symbols);
 }
 
 SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSchemeValue* src) {
@@ -1414,7 +1573,7 @@ SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSche
          * each one is built fresh before being copied into -- the same shape
          * the list and vector branches use. A procedure may legitimately carry
          * no bindings or no body, and a null handle stays null. */
-        dest->value.procedure.name     = summa_string_make(src->value.procedure.name->value);
+        dest->value.procedure.name     = src->value.procedure.name; /* Interned; borrowed. */
         dest->value.procedure.bindings = nullptr;
         dest->value.procedure.body     = nullptr;
         /* Retained: the copy is another thing pointing at that environment, and
@@ -1423,7 +1582,7 @@ SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSche
          * summa_scheme_environment_for_each_edge has to enumerate exactly it. */
         dest->value.procedure.closure = summa_scheme_environment_acquire(src->value.procedure.closure);
         if (src->value.procedure.bindings) {
-            dest->value.procedure.bindings = summa_scheme_symbol_list_copy_deep(src->value.procedure.bindings);
+            dest->value.procedure.bindings = summa_scheme_symbol_list_copy(src->value.procedure.bindings);
         }
         if (src->value.procedure.body) {
             dest->value.procedure.body = summa_scheme_list_copy_deep(src->value.procedure.body);
@@ -1433,7 +1592,9 @@ SummaSchemeError summa_scheme_value_copy(SummaSchemeValue* dest, const SummaSche
         dest->value.string.value = summa_string_make(src->value.string.value->value);
     } break;
     case SummaSchemeSymbolType: {
-        dest->value.symbol.value = summa_string_make(src->value.symbol.value->value);
+        /* Interned, so the copy is the pointer. Nothing to allocate here and
+         * nothing for summa_scheme_value_free to give back. */
+        dest->value.symbol.value = src->value.symbol.value;
     } break;
     case SummaSchemeVectorType: {
         dest->value.vector.value = summa_scheme_list_copy_deep(src->value.vector.value);
@@ -1467,6 +1628,11 @@ void summa_scheme_value_free(SummaSchemeValue* value) {
     case SummaSchemeIntegerType: {
         /* Stored inline in the union; nothing was allocated. */
     } break;
+    case SummaSchemeSymbolType: {
+        /* The name is the intern table's, for the life of the process. A value
+         * naming it borrowed it, so there is nothing to give back -- the
+         * mirror of summa_scheme_value_copy's symbol case. */
+    } break;
     case SummaSchemeListType: {
         SUMMA_SCHEME_FREE_HANDLE(value->value.list.value, summa_scheme_list_free_deep);
     } break;
@@ -1476,17 +1642,16 @@ void summa_scheme_value_free(SummaSchemeValue* value) {
          * a reference from the moment it was made or copied, and this gives it
          * back. An environment tearing itself down has already nulled the slot
          * through summa_scheme_environment_for_each_edge, so that path releases
-         * it once rather than twice. */
+         * it once rather than twice.
+         *
+         * `name` is interned and so is every entry of `bindings`, which is why
+         * only the list itself is freed and the name is not touched at all. */
         SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.closure, summa_scheme_environment_release);
-        SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.name, summa_string_free);
-        SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.bindings, summa_scheme_symbol_list_free_deep);
+        SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.bindings, summa_symbol_list_free);
         SUMMA_SCHEME_FREE_HANDLE(value->value.procedure.body, summa_scheme_list_free_deep);
     } break;
     case SummaSchemeStringType: {
         SUMMA_SCHEME_FREE_HANDLE(value->value.string.value, summa_string_free);
-    } break;
-    case SummaSchemeSymbolType: {
-        SUMMA_SCHEME_FREE_HANDLE(value->value.symbol.value, summa_string_free);
     } break;
     case SummaSchemeVectorType: {
         SUMMA_SCHEME_FREE_HANDLE(value->value.vector.value, summa_scheme_list_free_deep);
@@ -1532,14 +1697,18 @@ bool summa_scheme_value_equals(const SummaSchemeValue* left, const SummaSchemeVa
         return true;
     }
     case SummaSchemeProcedureType: {
-        return summa_string_cmp(left->value.procedure.name, right->value.procedure.name) == 0;
+        return left->value.procedure.name == right->value.procedure.name;
     }
     case SummaSchemeStringType: {
+        /* Strings are values rather than names, so this one stays a compare of
+         * contents: `(string-ref s 0)` builds them at runtime and two equal
+         * strings are two allocations. */
         return summa_string_cmp(left->value.string.value, right->value.string.value) == 0;
     }
     case SummaSchemeSymbolType: {
-        // TODO: Make this better by looking up in the environment's symbol map for equality
-        return summa_string_cmp(left->value.symbol.value, right->value.symbol.value) == 0;
+        /* Interning is what makes this a pointer compare. Two symbols are the
+         * same symbol exactly when they name the same record. */
+        return left->value.symbol.value == right->value.symbol.value;
     }
     case SummaSchemeVectorType: {
         SummaList leftVector  = left->value.vector.value;
@@ -1616,7 +1785,8 @@ static void summa_scheme_value_for_each_environment_edge(SummaSchemeValue*      
     case SummaSchemeIntegerType:
     case SummaSchemeStringType:
     case SummaSchemeSymbolType: {
-        /* Nothing that can point at an environment. */
+        /* Nothing that can point at an environment. A symbol names an interned
+         * record, which is not counted and not owned, so it is not an edge. */
     } break;
     }
 }
@@ -1737,10 +1907,10 @@ static void summa_scheme_environment_destroy(void* payload) {
      * was reached through. */
     summa_scheme_environment_for_each_edge(env, summa_scheme_environment_edge_release, nullptr);
 
+    /* The value only: a binding's name is interned, so the environment never
+     * owned it. */
     for (size_t i = 0; i < env->bindings->length; i++) {
-        SummaSchemeBinding* binding = &env->bindings->value[i];
-        summa_scheme_value_free(&binding->value);
-        summa_string_free(binding->name);
+        summa_scheme_value_free(&env->bindings->value[i].value);
     }
     summa_binding_list_free(env->bindings);
     env->bindings = nullptr;
@@ -1898,21 +2068,23 @@ static void summa_scheme_environment_collect_if_due(void) {
 #pragma endregion Environment lifetime
 
 /* The table lives with the builtins; this only needs the names. */
-static size_t      summa_scheme_builtin_count(void);
-static const char* summa_scheme_builtin_name(size_t index);
+static size_t                summa_scheme_builtin_count(void);
+static SummaSchemeSymbolName summa_scheme_builtin_symbol(size_t index);
 
 void summa_scheme_environment_init_global(SummaSchemeEnvironment env) {
-    SummaSchemeBindingList bindings = env->bindings;
+    /* The builtin names are interned by this, and the dispatch below compares
+     * against them by pointer. */
+    summa_scheme_symbols_ensure();
 
+    const SummaSchemeBindingList bindings = env->bindings;
     for (size_t i = 0; i < summa_scheme_builtin_count(); i++) {
-        const char* name = summa_scheme_builtin_name(i);
-        /* The binding's name and the procedure's name are separate strings on
-         * purpose: one handle shared across both would be freed twice. */
-        summa_binding_list_push(
-            bindings,
-            &summa_scheme_binding_make(
-                summa_string_make(name),
-                summa_make_scheme_procedure(summa_string_make(name), summa_symbol_list_make_empty(), nullptr)));
+        /* The binding's name and the procedure's name are now deliberately the
+         * *same* record. They used to be separate strings so that freeing one
+         * did not free the other; an interned name is freed by nobody. */
+        const SummaSchemeSymbolName name = summa_scheme_builtin_symbol(i);
+        summa_binding_list_push(bindings,
+                                &summa_scheme_binding_make(
+                                    name, summa_make_scheme_procedure(name, summa_symbol_list_make_empty(), nullptr)));
     }
 }
 
@@ -1921,20 +2093,19 @@ SummaSchemeError summa_scheme_environment_set(const SummaSchemeEnvironment env, 
         /* By reference: a copy of the element would take the rebinding with it
          * when it went out of scope, leaving the environment untouched. */
         SummaSchemeBinding* binding = &env->bindings->value[i];
-        if (summa_string_cmp(binding->name, newBinding.name) == 0) {
+        if (binding->name == newBinding.name) {
             /* The old value is being replaced, so it goes before the overwrite
              * rather than after it. The incoming value is moved in rather than
-             * copied, and the incoming name is released -- the environment
-             * already holds an equal one, and set() owns everything it is
-             * handed on both paths. */
+             * copied. The two names are the same interned record -- there is no
+             * duplicate left to release, which is what this branch used to have
+             * to remember. */
             summa_scheme_value_free(&binding->value);
             binding->value = newBinding.value;
-            summa_string_free(newBinding.name);
             return summa_success();
         }
     }
-    /* Pushed by value: the environment takes ownership of the binding's name
-     * and value from here on. */
+    /* Pushed by value: the environment takes ownership of the binding's value
+     * from here on. */
     summa_binding_list_push(env->bindings, &newBinding);
     return summa_success();
 }
@@ -1942,41 +2113,47 @@ SummaSchemeError summa_scheme_environment_set(const SummaSchemeEnvironment env, 
 SummaSchemeError summa_scheme_environment_get(const SummaSchemeEnvironment env,
                                               const SummaSchemeSymbol      symbol,
                                               SummaSchemeBinding*          out) {
-    return summa_scheme_environment_get_string(env, symbol.value, out);
+    return summa_scheme_environment_get_name(env, symbol.value, out);
 }
 
-SummaSchemeError
-summa_scheme_environment_get_string(const SummaSchemeEnvironment env, const SummaString str, SummaSchemeBinding* out) {
+SummaSchemeError summa_scheme_environment_get_name(const SummaSchemeEnvironment env,
+                                                   const SummaSchemeSymbolName  name,
+                                                   SummaSchemeBinding*          out) {
     SummaSchemeEnvironment owner = nullptr;
-    return summa_scheme_environment_get_owner(env, str, out, &owner);
+    return summa_scheme_environment_get_owner(env, name, out, &owner);
 }
 
 SummaSchemeError summa_scheme_environment_get_owner(const SummaSchemeEnvironment env,
-                                                    const SummaString            str,
+                                                    const SummaSchemeSymbolName  name,
                                                     SummaSchemeBinding*          out,
                                                     SummaSchemeEnvironment*      out_owner) {
     /* Iterative rather than recursive over the chain: the owner is what the
-     * loop already has to carry, and a deep lexical nesting costs no stack. */
+     * loop already has to carry, and a deep lexical nesting costs no stack.
+     *
+     * Still a linear scan per frame -- that is #33's to fix -- but the
+     * comparison inside it is now one pointer against another rather than a
+     * strcmp, so the walk pays for its length and not for its names. */
     for (SummaSchemeEnvironment scope = env; scope; scope = scope->parent) {
-        for (size_t i = 0; i < scope->bindings->length; i++) {
-            const SummaSchemeBinding binding = scope->bindings->value[i];
-            if (summa_string_cmp(binding.name, str) == 0) {
-                *out       = binding;
+        const SummaSchemeBindingList bindings = scope->bindings;
+        for (size_t i = 0; i < bindings->length; i++) {
+            if (bindings->value[i].name == name) {
+                *out       = bindings->value[i];
                 *out_owner = scope;
                 return summa_success();
             }
         }
     }
-    snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "Unbound variable: %s", str->value);
+    snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "Unbound variable: %s", name->value);
     return summa_make_error(ERROR_MESSAGE);
 }
 
-SummaSchemeError
-summa_scheme_environment_assign(const SummaSchemeEnvironment env, const SummaString name, SummaSchemeValue value) {
+SummaSchemeError summa_scheme_environment_assign(const SummaSchemeEnvironment env,
+                                                 const SummaSchemeSymbolName  name,
+                                                 SummaSchemeValue             value) {
     for (size_t i = 0; i < env->bindings->length; i++) {
         /* By reference: a copy would carry the rebinding out of scope. */
         SummaSchemeBinding* binding = &env->bindings->value[i];
-        if (summa_string_cmp(binding->name, name) == 0) {
+        if (binding->name == name) {
             summa_scheme_value_free(&binding->value);
             binding->value = value;
             return summa_success();
@@ -2665,18 +2842,25 @@ static const SummaSchemeBuiltin SUMMA_SCHEME_BUILTINS[] = {
     {"procedure?", summa_scheme_builtin_is_procedure},
 };
 
+#define SUMMA_SCHEME_BUILTIN_COUNT (sizeof(SUMMA_SCHEME_BUILTINS) / sizeof(SUMMA_SCHEME_BUILTINS[0]))
+
+/* Row i's name, interned. Filled in by summa_scheme_symbols_ensure, which is
+ * what turns the dispatch below from twenty-three strcmps per builtin call into
+ * twenty-three pointer compares. */
+static SummaSchemeSymbolName SUMMA_SCHEME_BUILTIN_SYMBOLS[SUMMA_SCHEME_BUILTIN_COUNT];
+
 static size_t summa_scheme_builtin_count(void) {
-    return sizeof(SUMMA_SCHEME_BUILTINS) / sizeof(SUMMA_SCHEME_BUILTINS[0]);
+    return SUMMA_SCHEME_BUILTIN_COUNT;
 }
 
-static const char* summa_scheme_builtin_name(size_t index) {
-    return SUMMA_SCHEME_BUILTINS[index].name;
+static SummaSchemeSymbolName summa_scheme_builtin_symbol(size_t index) {
+    return SUMMA_SCHEME_BUILTIN_SYMBOLS[index];
 }
 
 SummaSchemeError
 summa_scheme_procedure_dispatch_global(SummaSchemeProcedure proc, const SummaList args, SummaSchemeValue* out) {
-    for (size_t i = 0; i < summa_scheme_builtin_count(); i++) {
-        if (strcmp(proc.name->value, SUMMA_SCHEME_BUILTINS[i].name) == 0) {
+    for (size_t i = 0; i < SUMMA_SCHEME_BUILTIN_COUNT; i++) {
+        if (proc.name == SUMMA_SCHEME_BUILTIN_SYMBOLS[i]) {
             return SUMMA_SCHEME_BUILTINS[i].fn(args, out);
         }
     }
@@ -2777,25 +2961,26 @@ static SummaSchemeError summa_scheme_special_if(const SummaSchemeEnvironment env
 /* Parameter names and body copied out; defining environment captured by
  * handle. `params` is only read -- its elements stay the caller's. */
 static SummaSchemeError summa_scheme_make_closure(const SummaSchemeEnvironment env,
-                                                  const char*                  name,
+                                                  const SummaSchemeSymbolName  name,
                                                   const SummaList              params,
                                                   const SummaList              form,
                                                   size_t                       body_start,
                                                   SummaSchemeValue*            out) {
     if (form->length <= body_start) {
-        snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - expects at least one body expression", name);
+        snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - expects at least one body expression", name->value);
         return summa_make_error(ERROR_MESSAGE);
     }
 
     SummaSchemeSymbolList bindings = summa_symbol_list_make_empty();
     for (size_t i = 0; params && i < params->length; i++) {
         if (params->value[i].type != SummaSchemeSymbolType) {
-            summa_scheme_symbol_list_free_deep(bindings);
-            snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - parameter names must be symbols", name);
+            summa_symbol_list_free(bindings);
+            snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - parameter names must be symbols", name->value);
             return summa_make_error(ERROR_MESSAGE);
         }
-        SummaSchemeSymbol symbol = {.value = summa_string_make(params->value[i].value.symbol.value->value)};
-        summa_symbol_list_push(bindings, &symbol);
+        /* The parameter name is already interned -- it came out of the reader
+         * that way -- so this is the pointer, not a copy of the characters. */
+        summa_symbol_list_push(bindings, &params->value[i].value.symbol);
     }
 
     SummaList body = summa_list_make_empty();
@@ -2808,7 +2993,7 @@ static SummaSchemeError summa_scheme_make_closure(const SummaSchemeEnvironment e
     /* The capture is a reference, not a borrow: the procedure now holds its
      * defining environment up, which is what lets it be called after the frame
      * it was written in has returned. */
-    *out = summa_make_scheme_closure(summa_string_make(name), bindings, body, summa_scheme_environment_acquire(env));
+    *out = summa_make_scheme_closure(name, bindings, body, summa_scheme_environment_acquire(env));
     return summa_success();
 }
 
@@ -2822,7 +3007,7 @@ static SummaSchemeError summa_scheme_special_lambda(const SummaSchemeEnvironment
     if (form->value[1].type != SummaSchemeListType) {
         return summa_make_error("lambda - parameter list must be a list");
     }
-    return summa_scheme_make_closure(env, "lambda", form->value[1].value.list.value, form, 2, out);
+    return summa_scheme_make_closure(env, SUMMA_SCHEME_SYMBOL_LAMBDA, form->value[1].value.list.value, form, 2, out);
 }
 
 /* `define` has no tail position: the value expression's result is bound rather
@@ -2843,7 +3028,7 @@ static SummaSchemeError summa_scheme_special_define(const SummaSchemeEnvironment
         if (!signature || signature->length == 0 || signature->value[0].type != SummaSchemeSymbolType) {
             return summa_make_error("define - procedure name must be a symbol");
         }
-        const char* name = signature->value[0].value.symbol.value->value;
+        const SummaSchemeSymbolName name = signature->value[0].value.symbol.value;
 
         /* The signature minus its head. Elements are borrowed, so this list is
          * released shallowly. */
@@ -2857,8 +3042,8 @@ static SummaSchemeError summa_scheme_special_define(const SummaSchemeEnvironment
         if (err.had) {
             return err;
         }
-        summa_scheme_environment_set(env, summa_scheme_binding_make(summa_string_make(name), procedure));
-        *out = summa_make_scheme_symbol(name);
+        summa_scheme_environment_set(env, summa_scheme_binding_make(name, procedure));
+        *out = summa_make_scheme_symbol_name(name);
         return summa_success();
     }
 
@@ -2874,11 +3059,12 @@ static SummaSchemeError summa_scheme_special_define(const SummaSchemeEnvironment
     if (err.had) {
         return err;
     }
-    /* Separate strings: the binding name, the value, and the symbol returned
-     * are all freed by different owners. */
-    const char* name = target.value.symbol.value->value;
-    summa_scheme_environment_set(env, summa_scheme_binding_make(summa_string_make(name), value));
-    *out = summa_make_scheme_symbol(name);
+    /* One interned record, named by both the binding and the symbol handed
+     * back. Where this needed three separate strings with three owners, there
+     * is now nothing here to own. */
+    const SummaSchemeSymbolName name = target.value.symbol.value;
+    summa_scheme_environment_set(env, summa_scheme_binding_make(name, value));
+    *out = summa_make_scheme_symbol_name(name);
     return summa_success();
 }
 
@@ -2930,14 +3116,14 @@ typedef enum {
 
 static SummaSchemeError summa_scheme_let_clause(const char*              name,
                                                 const SummaSchemeValue*  clause,
-                                                const char**             out_name,
+                                                SummaSchemeSymbolName*   out_name,
                                                 const SummaSchemeValue** out_expression) {
     if (clause->type != SummaSchemeListType || !clause->value.list.value || clause->value.list.value->length != 2 ||
         clause->value.list.value->value[0].type != SummaSchemeSymbolType) {
         snprintf(ERROR_MESSAGE, ERROR_MESSAGE_LENGTH, "%s - each binding must be (name value)", name);
         return summa_make_error(ERROR_MESSAGE);
     }
-    *out_name       = clause->value.list.value->value[0].value.symbol.value->value;
+    *out_name       = clause->value.list.value->value[0].value.symbol.value;
     *out_expression = &clause->value.list.value->value[1];
     return summa_success();
 }
@@ -2964,19 +3150,18 @@ static SummaSchemeError summa_scheme_let(const char*                  name,
     if (kind == SUMMA_SCHEME_LET_RECURSIVE) {
         /* Names first, values second -- the gap is the point of letrec. */
         for (size_t i = 0; clauses && i < clauses->length; i++) {
-            const char*             binding_name = nullptr;
+            SummaSchemeSymbolName   binding_name = nullptr;
             const SummaSchemeValue* expression   = nullptr;
             err = summa_scheme_let_clause(name, &clauses->value[i], &binding_name, &expression);
             if (err.had) {
                 break;
             }
-            summa_scheme_environment_set(
-                frame, summa_scheme_binding_make(summa_string_make(binding_name), summa_scheme_unspecified()));
+            summa_scheme_environment_set(frame, summa_scheme_binding_make(binding_name, summa_scheme_unspecified()));
         }
     }
 
     for (size_t i = 0; !err.had && clauses && i < clauses->length; i++) {
-        const char*             binding_name = nullptr;
+        SummaSchemeSymbolName   binding_name = nullptr;
         const SummaSchemeValue* expression   = nullptr;
         err = summa_scheme_let_clause(name, &clauses->value[i], &binding_name, &expression);
         if (err.had) {
@@ -2990,7 +3175,7 @@ static SummaSchemeError summa_scheme_let(const char*                  name,
         if (err.had) {
             break;
         }
-        summa_scheme_environment_set(frame, summa_scheme_binding_make(summa_string_make(binding_name), value));
+        summa_scheme_environment_set(frame, summa_scheme_binding_make(binding_name, value));
     }
 
     if (!err.had) {
@@ -3040,7 +3225,7 @@ static SummaSchemeError summa_scheme_special_cond(const SummaSchemeEnvironment e
         const SummaList body = clause.value.list.value;
 
         const bool is_else = body->value[0].type == SummaSchemeSymbolType &&
-                             strcmp(body->value[0].value.symbol.value->value, "else") == 0;
+                             body->value[0].value.symbol.value == SUMMA_SCHEME_SYMBOL_ELSE;
         if (is_else) {
             return summa_scheme_evaluate_sequence_tail(env, body, 1, out, step);
         }
@@ -3185,10 +3370,41 @@ static const SummaSchemeSpecialForm SUMMA_SCHEME_SPECIAL_FORMS[] = {
     {"unless", summa_scheme_special_unless},
 };
 
-static SummaSchemeSpecialFormFn summa_scheme_special_form_lookup(const char* name) {
-    const size_t count = sizeof(SUMMA_SCHEME_SPECIAL_FORMS) / sizeof(SUMMA_SCHEME_SPECIAL_FORMS[0]);
-    for (size_t i = 0; i < count; i++) {
-        if (strcmp(name, SUMMA_SCHEME_SPECIAL_FORMS[i].name) == 0) {
+#define SUMMA_SCHEME_SPECIAL_FORM_COUNT (sizeof(SUMMA_SCHEME_SPECIAL_FORMS) / sizeof(SUMMA_SCHEME_SPECIAL_FORMS[0]))
+
+static SummaSchemeSymbolName SUMMA_SCHEME_SPECIAL_FORM_SYMBOLS[SUMMA_SCHEME_SPECIAL_FORM_COUNT];
+
+/* Runs once, on the first intern of anything. Every name below is a name the
+ * evaluator compares an incoming symbol against, and the comparison is only a
+ * pointer compare if both sides came out of the same table -- so they are
+ * interned here rather than at each use, where a literal would have to be
+ * hashed again on every combination evaluated.
+ *
+ * The flag is set before the interning rather than after it, because
+ * summa_scheme_symbol_intern calls this and the calls below call it back. */
+static bool SUMMA_SCHEME_SYMBOLS_READY = false;
+
+static void summa_scheme_symbols_ensure(void) {
+    if (SUMMA_SCHEME_SYMBOLS_READY) {
+        return;
+    }
+    SUMMA_SCHEME_SYMBOLS_READY = true;
+
+    for (size_t i = 0; i < SUMMA_SCHEME_SPECIAL_FORM_COUNT; i++) {
+        SUMMA_SCHEME_SPECIAL_FORM_SYMBOLS[i] = summa_scheme_symbol_intern(SUMMA_SCHEME_SPECIAL_FORMS[i].name);
+    }
+    for (size_t i = 0; i < SUMMA_SCHEME_BUILTIN_COUNT; i++) {
+        SUMMA_SCHEME_BUILTIN_SYMBOLS[i] = summa_scheme_symbol_intern(SUMMA_SCHEME_BUILTINS[i].name);
+    }
+    SUMMA_SCHEME_SYMBOL_LAMBDA = summa_scheme_symbol_intern("lambda");
+    SUMMA_SCHEME_SYMBOL_ELSE   = summa_scheme_symbol_intern("else");
+}
+
+/* Fourteen pointer compares, where this was fourteen strcmps on the head of
+ * every combination the evaluator met. */
+static SummaSchemeSpecialFormFn summa_scheme_special_form_lookup(SummaSchemeSymbolName name) {
+    for (size_t i = 0; i < SUMMA_SCHEME_SPECIAL_FORM_COUNT; i++) {
+        if (name == SUMMA_SCHEME_SPECIAL_FORM_SYMBOLS[i]) {
             return SUMMA_SCHEME_SPECIAL_FORMS[i].fn;
         }
     }
@@ -3219,11 +3435,13 @@ static SummaSchemeError summa_scheme_procedure_frame(const SummaSchemeEnvironmen
      * where it is called. The fallback only ever covers a builtin. */
     const SummaSchemeEnvironment frame = summa_scheme_environment_make(proc.closure ? proc.closure : env);
     for (size_t i = 0; i < expected; i++) {
-        /* The frame takes its own copy; the argument list is about to go. */
+        /* The frame takes its own copy of the *value*; the argument list is
+         * about to go. The name costs nothing -- it is the same interned record
+         * the procedure's parameter list already holds, where it used to be a
+         * fresh string allocated per binding per call. */
         SummaSchemeValue argument;
         summa_scheme_value_copy(&argument, &args->value[i]);
-        summa_scheme_environment_set(
-            frame, summa_scheme_binding_make(summa_string_make(proc.bindings->value[i].value->value), argument));
+        summa_scheme_environment_set(frame, summa_scheme_binding_make(proc.bindings->value[i].value, argument));
     }
 
     *out = frame;

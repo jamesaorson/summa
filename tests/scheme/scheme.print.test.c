@@ -12,34 +12,29 @@
 #include <stdlib.h>
 
 #define SCOPED_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaList, var, init, summa_list_free)
-#define SCOPED_STRING(var, init) SUMMA_TEST_SCOPED_VALUE(SummaString, var, init, summa_string_free)
 
-/* A symbol list owns the string inside each symbol, which summa_symbol_list_free
- * doesn't know about -- so the destructor drains them first. */
-static void free_symbol_list(SummaSchemeSymbolList symbols) {
-    for (size_t i = 0; i < symbols->length; i++) {
-        summa_string_free(symbols->value[i].value);
-    }
-    summa_symbol_list_free(symbols);
-}
+/* A symbol names an interned record the table owns, so the list is all there is
+ * to release -- where this used to need a destructor that drained a string out
+ * of every element first. */
+#define SCOPED_SYMBOL_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaSchemeSymbolList, var, init, summa_symbol_list_free)
 
-#define SCOPED_SYMBOL_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaSchemeSymbolList, var, init, free_symbol_list)
-
-/* String and symbol scheme values own the SummaString the make macro builds for
- * them, so scoping the value has to reach one level in to release it. */
+/* A string scheme value owns the SummaString the make macro builds for it, so
+ * scoping the value has to reach one level in to release it. A *symbol* value
+ * does not: its name is interned, and summa_scheme_value_free is the whole
+ * story -- a no-op that stays correct if that ever changes. */
 static void free_scheme_string(SummaSchemeValue value) {
     summa_string_free(value.value.string.value);
 }
 
-static void free_scheme_symbol(SummaSchemeValue value) {
-    summa_string_free(value.value.symbol.value);
+static void free_scheme_value(SummaSchemeValue value) {
+    summa_scheme_value_free(&value);
 }
 
 #define SCOPED_SCHEME_STRING(var, cstr) \
     SUMMA_TEST_SCOPED_VALUE(SummaSchemeValue, var, summa_make_scheme_string(cstr), free_scheme_string)
 
 #define SCOPED_SCHEME_SYMBOL(var, cstr) \
-    SUMMA_TEST_SCOPED_VALUE(SummaSchemeValue, var, summa_make_scheme_symbol(cstr), free_scheme_symbol)
+    SUMMA_TEST_SCOPED_VALUE(SummaSchemeValue, var, summa_make_scheme_symbol(cstr), free_scheme_value)
 
 void test_scheme_print_boolean() {
     SUMMA_TEST_SCOPED_FILE(f) {
@@ -182,19 +177,18 @@ void test_scheme_print_list() {
 
 void test_scheme_print_procedure() {
     // TODO: Finish
-    SCOPED_STRING(def_name, summa_string_make("add2"))
     SCOPED_SYMBOL_LIST(def_bindings, summa_symbol_list_make_empty())
     SCOPED_LIST(def_body, summa_list_make_empty())
-    SCOPED_STRING(body_proc_name, summa_string_make("+"))
     SCOPED_SYMBOL_LIST(body_proc_bindings, summa_symbol_list_make_empty()) {
-        SummaSchemeValue def = summa_make_scheme_procedure(def_name, def_bindings, def_body);
+        SummaSchemeValue def = summa_make_scheme_procedure(summa_scheme_symbol_intern("add2"), def_bindings, def_body);
 
-        summa_symbol_list_push(def_bindings, &(SummaSchemeSymbol){.value = summa_string_make("x")});
-        summa_symbol_list_push(def_bindings, &(SummaSchemeSymbol){.value = summa_string_make("y")});
+        summa_symbol_list_push(def_bindings, &(SummaSchemeSymbol){.value = summa_scheme_symbol_intern("x")});
+        summa_symbol_list_push(def_bindings, &(SummaSchemeSymbol){.value = summa_scheme_symbol_intern("y")});
 
-        summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("x")});
-        summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("y")});
-        summa_list_push(def_body, &summa_make_scheme_procedure(body_proc_name, body_proc_bindings, nullptr));
+        summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_scheme_symbol_intern("x")});
+        summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_scheme_symbol_intern("y")});
+        summa_list_push(def_body,
+                        &summa_make_scheme_procedure(summa_scheme_symbol_intern("+"), body_proc_bindings, nullptr));
 
         SUMMA_TEST_SCOPED_FILE(f) {
             SummaSchemeError error = summa_scheme_print(def, f.file);

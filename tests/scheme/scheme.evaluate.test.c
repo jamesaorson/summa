@@ -18,18 +18,11 @@
         SummaSchemeEnvironment, var, summa_scheme_environment_make_global(), summa_scheme_environment_free)
 
 #define SCOPED_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaList, var, init, summa_list_free)
-#define SCOPED_STRING(var, init) SUMMA_TEST_SCOPED_VALUE(SummaString, var, init, summa_string_free)
 
-/* A symbol list owns the string inside each symbol, which summa_symbol_list_free
- * doesn't know about -- so the destructor drains them first. */
-static void free_symbol_list(SummaSchemeSymbolList symbols) {
-    for (size_t i = 0; i < symbols->length; i++) {
-        summa_string_free(symbols->value[i].value);
-    }
-    summa_symbol_list_free(symbols);
-}
-
-#define SCOPED_SYMBOL_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaSchemeSymbolList, var, init, free_symbol_list)
+/* A symbol names an interned record the table owns, so the list is all there is
+ * to release -- where this used to need a destructor that drained a string out
+ * of every element first. */
+#define SCOPED_SYMBOL_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaSchemeSymbolList, var, init, summa_symbol_list_free)
 
 /* A form owns every value pushed into it. summa_scheme_value_free is deep, so
  * it reaches nested forms on its own; what it cannot do is free the outer
@@ -178,20 +171,21 @@ void test_scheme_evaluate_quoted_list_is_data() {
  * supply the arguments, which a bare value is not. */
 void test_scheme_evaluate_procedure() {
     SCOPED_GLOBAL_ENV(env)
-    SCOPED_STRING(body_proc_name, summa_string_make("+"))
     SCOPED_SYMBOL_LIST(body_proc_bindings, summa_symbol_list_make_empty()) {
-        summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("x")});
-        summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_string_make("y")});
+        summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_scheme_symbol_intern("x")});
+        summa_symbol_list_push(body_proc_bindings, &(SummaSchemeSymbol){.value = summa_scheme_symbol_intern("y")});
 
-        SummaSchemeValue in    = summa_make_scheme_procedure(body_proc_name, body_proc_bindings, nullptr);
+        SummaSchemeValue in =
+            summa_make_scheme_procedure(summa_scheme_symbol_intern("+"), body_proc_bindings, nullptr);
         SummaSchemeValue out   = {};
         SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
 
         SUMMA_TEST_ASSERT(!error.had);
         SUMMA_TEST_ASSERT_EQ(SummaSchemeProcedureType, out.type);
         SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
-        /* The copy owns its own binding list and its own parameter names, so
-         * releasing it cannot disturb the original. */
+        /* The copy owns its own binding list -- the names inside it are the
+         * intern table's and are shared -- so releasing it cannot disturb the
+         * original. */
         SUMMA_TEST_ASSERT_NEQ(in.value.procedure.bindings, out.value.procedure.bindings);
         summa_scheme_value_free(&out);
     }
@@ -333,8 +327,8 @@ void test_scheme_evaluate_unbound_symbol_is_an_error() {
         SUMMA_TEST_ASSERT(error.had);
         SUMMA_TEST_ASSERT_EQ_STR("Unbound variable: " HELLO, error.message);
 
+        /* `in` names an interned record, so there is nothing of it to free. */
         summa_scheme_value_free(&out);
-        summa_string_free(in.value.symbol.value);
     }
 }
 
