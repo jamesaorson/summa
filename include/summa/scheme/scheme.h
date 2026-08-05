@@ -544,6 +544,11 @@ SummaSchemeError
 summa_scheme_procedure_dispatch_global(SummaSchemeProcedure proc, const SummaList args, SummaSchemeValue* out);
 SummaSchemeError
 summa_scheme_evaluate_arguments(const SummaSchemeEnvironment env, const SummaList form, SummaList* out);
+
+/* Frees the list and whatever it still owns. "Still" is load-bearing: a call
+ * frame moves the arguments out rather than copying them, and takes the list's
+ * length to zero on the way, so this frees the array and nothing in it. A
+ * builtin borrows instead, and then this frees everything. */
 void summa_scheme_argument_list_free(SummaList args);
 
 /* Frees a list and every value in it. Defined further down, but the reader
@@ -2234,10 +2239,10 @@ void summa_scheme_argument_list_free(SummaList args) {
     summa_list_free(args);
 }
 
-static SummaSchemeError summa_scheme_procedure_frame(const SummaSchemeEnvironment env,
-                                                     const SummaSchemeProcedure   proc,
-                                                     const SummaList              args,
-                                                     SummaSchemeEnvironment*      out);
+static SummaSchemeError summa_scheme_procedure_frame_moving(const SummaSchemeEnvironment env,
+                                                            const SummaSchemeProcedure   proc,
+                                                            const SummaList              args,
+                                                            SummaSchemeEnvironment*      out);
 
 static SummaSchemeError summa_scheme_apply(const SummaSchemeEnvironment env,
                                            const SummaSchemeProcedure   proc,
@@ -2249,11 +2254,17 @@ static SummaSchemeError summa_scheme_apply(const SummaSchemeEnvironment env,
     if (!err.had) {
         if (!proc.body) {
             /* A builtin runs to a value here and now -- there is no body to
-             * continue into, so nothing to hand back. */
+             * continue into, so nothing to hand back. It *borrows* the list:
+             * every builtin that returns something built out of an argument
+             * copies it, because the teardown below is unconditional. */
             err = summa_scheme_procedure_dispatch_global(proc, args, out);
         } else {
             SummaSchemeEnvironment frame = nullptr;
-            err                          = summa_scheme_procedure_frame(env, proc, args, &frame);
+            /* These arguments were evaluated for this call and nothing else
+             * holds them, so the frame takes them rather than copying them --
+             * and `args` is left empty, which is what keeps the teardown below
+             * from reaching what it gave away. */
+            err = summa_scheme_procedure_frame_moving(env, proc, args, &frame);
             if (!err.had) {
                 /* The body's last expression is a tail position, so the call
                  * ends here rather than nesting: the trampoline picks it up
@@ -2266,7 +2277,10 @@ static SummaSchemeError summa_scheme_apply(const SummaSchemeEnvironment env,
             }
         }
     }
-    /* Arguments die with the call; the frame copied what it bound. */
+    /* Whatever the list still owns dies with the call. After a user procedure
+     * that is nothing at all -- the frame took every value -- and after a
+     * builtin, or after an arity failure, or after an operand that errored, it
+     * is all of them. */
     summa_scheme_argument_list_free(args);
     return err;
 }
@@ -3459,11 +3473,18 @@ static SummaSchemeSpecialFormFn summa_scheme_special_form_lookup(SummaSchemeSymb
 
 /* Checks the arity and builds the call frame, and stops there. The body is the
  * caller's to run, because a call in tail position runs it in the trampoline
- * rather than under this function. `*out` receives the only reference. */
-static SummaSchemeError summa_scheme_procedure_frame(const SummaSchemeEnvironment env,
-                                                     const SummaSchemeProcedure   proc,
-                                                     const SummaList              args,
-                                                     SummaSchemeEnvironment*      out) {
+ * rather than under this function. `*out` receives the only reference.
+ *
+ * `move` decides who owns the arguments afterwards, and it is the whole of the
+ * difference between the two entry points below. Moving empties `args` on
+ * success, so the caller's teardown reaches nothing the frame now holds; the
+ * arity check is the only thing here that can fail, and it runs before the
+ * first value changes hands, so the frame takes all of them or none. */
+static SummaSchemeError summa_scheme_procedure_frame_impl(const SummaSchemeEnvironment env,
+                                                          const SummaSchemeProcedure   proc,
+                                                          const SummaList              args,
+                                                          const bool                   move,
+                                                          SummaSchemeEnvironment*      out) {
     const size_t expected = proc.bindings ? proc.bindings->length : 0;
     if (expected != args->length) {
         snprintf(ERROR_MESSAGE,
@@ -3483,18 +3504,51 @@ static SummaSchemeError summa_scheme_procedure_frame(const SummaSchemeEnvironmen
      * the way up for a procedure taking more than eight parameters. */
     const SummaSchemeEnvironment frame =
         summa_scheme_environment_make_with_capacity(proc.closure ? proc.closure : env, expected);
+
+    /* Emptied before the first value moves rather than after the last, so there
+     * is no instant at which the list and the frame would both free the same
+     * value. The storage stays exactly where it is -- only who owns what is in
+     * it changes. */
+    if (move) {
+        args->length = 0;
+    }
+
     for (size_t i = 0; i < expected; i++) {
-        /* The frame takes its own copy of the *value*; the argument list is
-         * about to go. The name costs nothing -- it is the same interned record
+        /* The name costs nothing either way -- it is the same interned record
          * the procedure's parameter list already holds, where it used to be a
          * fresh string allocated per binding per call. */
-        SummaSchemeValue argument;
-        summa_scheme_value_copy(&argument, &args->value[i]);
+        SummaSchemeValue argument = args->value[i];
+        if (!move) {
+            summa_scheme_value_copy(&argument, &args->value[i]);
+        }
         summa_scheme_environment_set(frame, summa_scheme_binding_make(proc.bindings->value[i].value, argument));
     }
 
     *out = frame;
     return summa_success();
+}
+
+/* Takes ownership of every argument, and empties `args` to say so. For the
+ * evaluator's own calls: the operands were evaluated a moment ago for this call
+ * alone, so nothing else can be looking at them and a copy buys nothing.
+ *
+ * A duplicated parameter name is still handled by `environment_set`, which
+ * frees the value it is replacing -- so each moved value is released exactly
+ * once, by the frame, whether or not it survived to the end of the call. */
+static SummaSchemeError summa_scheme_procedure_frame_moving(const SummaSchemeEnvironment env,
+                                                            const SummaSchemeProcedure   proc,
+                                                            const SummaList              args,
+                                                            SummaSchemeEnvironment*      out) {
+    return summa_scheme_procedure_frame_impl(env, proc, args, true, out);
+}
+
+/* Leaves `args` exactly as it found it, for a caller that still owns them --
+ * `summa_scheme_procedure_dispatch`, whose arguments belong to a host. */
+static SummaSchemeError summa_scheme_procedure_frame(const SummaSchemeEnvironment env,
+                                                     const SummaSchemeProcedure   proc,
+                                                     const SummaList              args,
+                                                     SummaSchemeEnvironment*      out) {
+    return summa_scheme_procedure_frame_impl(env, proc, args, false, out);
 }
 
 /* Calls a procedure and runs it to a value -- the entry point for a host that
