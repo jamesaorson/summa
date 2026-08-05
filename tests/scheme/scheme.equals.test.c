@@ -16,22 +16,18 @@
 #define WORLD "world"
 #define HELLO_WORLD HELLO " " WORLD
 
-#define SCOPED_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaList, var, init, summa_list_free)
+#define SCOPED_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaList, var, init, summa_scheme_list_release)
 
-/* A string scheme value owns the SummaString the make macro builds for it, so
- * scoping the value has to reach one level in to release it. A *symbol* value
- * does not: its name is interned, and summa_scheme_value_free is the whole
- * story -- a no-op that stays correct if that ever changes. */
-static void free_scheme_string(SummaSchemeValue value) {
-    summa_string_free(value.value.string.value);
-}
-
+/* One destructor for every value type now. A string value used to need its own,
+ * reaching a level in to free the SummaString the make macro built; the string
+ * is a counted payload and summa_scheme_value_free releases it like any other.
+ * A *symbol* value stays a no-op through the same call: its name is interned. */
 static void free_scheme_value(SummaSchemeValue value) {
     summa_scheme_value_free(&value);
 }
 
 #define SCOPED_SCHEME_STRING(var, cstr) \
-    SUMMA_TEST_SCOPED_VALUE(SummaSchemeValue, var, summa_make_scheme_string(cstr), free_scheme_string)
+    SUMMA_TEST_SCOPED_VALUE(SummaSchemeValue, var, summa_make_scheme_string(cstr), free_scheme_value)
 
 #define SCOPED_SCHEME_SYMBOL(var, cstr) \
     SUMMA_TEST_SCOPED_VALUE(SummaSchemeValue, var, summa_make_scheme_symbol(cstr), free_scheme_value)
@@ -101,34 +97,32 @@ void test_scheme_equals_integer() {
 }
 
 void test_scheme_equals_list() {
-    SCOPED_LIST(left_nested, summa_list_make_empty())
-    SCOPED_LIST(right_nested, summa_list_make_empty()) {
-        SummaSchemeValue left_values[5] = {
-            summa_make_scheme_boolean(true),
-            summa_make_scheme_integer(420),
-            summa_make_scheme_floating(3.14),
-            summa_make_scheme_list(left_nested),
-            summa_make_scheme_boolean(false),
-        };
-        SummaSchemeValue right_values[5] = {
-            summa_make_scheme_boolean(true),
-            summa_make_scheme_integer(420),
-            summa_make_scheme_floating(3.14),
-            summa_make_scheme_list(right_nested),
-            summa_make_scheme_boolean(false),
-        };
+    /* Each nested list is owned by the list it is put into -- one owner per
+     * payload -- so neither gets a scope of its own. */
+    SummaSchemeValue left_values[5] = {
+        summa_make_scheme_boolean(true),
+        summa_make_scheme_integer(420),
+        summa_make_scheme_floating(3.14),
+        summa_make_scheme_list(summa_scheme_list_make_empty()),
+        summa_make_scheme_boolean(false),
+    };
+    SummaSchemeValue right_values[5] = {
+        summa_make_scheme_boolean(true),
+        summa_make_scheme_integer(420),
+        summa_make_scheme_floating(3.14),
+        summa_make_scheme_list(summa_scheme_list_make_empty()),
+        summa_make_scheme_boolean(false),
+    };
 
-        SCOPED_LIST(left_list, summa_list_make(left_values, sizeof(left_values) / sizeof(left_values[0])))
-        SCOPED_LIST(right_list, summa_list_make(right_values, sizeof(right_values) / sizeof(right_values[0]))) {
-            SummaSchemeValue* left  = &summa_make_scheme_list(left_list);
-            SummaSchemeValue* right = &summa_make_scheme_list(right_list);
+    SCOPED_LIST(left_list, summa_scheme_list_make(left_values, sizeof(left_values) / sizeof(left_values[0])))
+    SCOPED_LIST(right_list, summa_scheme_list_make(right_values, sizeof(right_values) / sizeof(right_values[0]))) {
+        SummaSchemeValue* left  = &summa_make_scheme_list(left_list);
+        SummaSchemeValue* right = &summa_make_scheme_list(right_list);
 
-            SUMMA_TEST_ASSERT(summa_scheme_value_equals(left, right));
+        SUMMA_TEST_ASSERT(summa_scheme_value_equals(left, right));
 
-            right->value.list.value->value[4].value.boolean.value =
-                !right->value.list.value->value[4].value.boolean.value;
-            SUMMA_TEST_ASSERT(!summa_scheme_value_equals(left, right));
-        }
+        right->value.list.value->value[4].value.boolean.value = !right->value.list.value->value[4].value.boolean.value;
+        SUMMA_TEST_ASSERT(!summa_scheme_value_equals(left, right));
     }
 }
 
@@ -210,8 +204,8 @@ void test_scheme_equals_vector() {
         summa_make_scheme_boolean(false),
     };
 
-    SCOPED_LIST(left_vector, summa_list_make(left_values, sizeof(left_values) / sizeof(left_values[0])))
-    SCOPED_LIST(right_vector, summa_list_make(right_values, sizeof(right_values) / sizeof(right_values[0]))) {
+    SCOPED_LIST(left_vector, summa_scheme_list_make(left_values, sizeof(left_values) / sizeof(left_values[0])))
+    SCOPED_LIST(right_vector, summa_scheme_list_make(right_values, sizeof(right_values) / sizeof(right_values[0]))) {
         SummaSchemeValue* left  = &summa_make_scheme_vector(left_vector);
         SummaSchemeValue* right = &summa_make_scheme_vector(right_vector);
 

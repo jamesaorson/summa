@@ -257,10 +257,10 @@ void test_scheme_lifetime_moved_argument_outlives_the_call() {
     assert_prints("((lambda (x) x) '(1 2 3))", "(1 2 3)");
 }
 
-/* The caller's binding is untouched by the call. A variable reference still
- * hands back a *copy* of the bound value, so what the frame moves is that copy
- * and never the binding itself -- which is why moving is safe before the symbol
- * case stops copying (issue #40). */
+/* The caller's binding survives the call. A variable reference now hands back a
+ * *retained handle* on the bound value rather than a copy of it, so the frame
+ * moves a second handle and never the binding's own -- which is what keeps
+ * moving safe now that the symbol case no longer copies. */
 void test_scheme_lifetime_moved_argument_does_not_alias_the_callers_binding() {
     assert_prints("(define l '(1 2 3))"
                   "(define (take v) v)"
@@ -347,6 +347,156 @@ void test_scheme_lifetime_repeated_list_arguments_reclaim_every_frame() {
 
 #pragma endregion Arguments moved into the frame
 
+#pragma region Counted payloads
+
+/* A list, a vector and a string carry a counted payload, so copying a value is
+ * a retain and two values can name one allocation. Everything below is about
+ * the two ways that goes wrong -- freed while somebody still holds it, or held
+ * by nobody and never freed -- and none of these can go red by printing the
+ * wrong answer. `leaks` and ASan read the verdict.
+ *
+ * See BUILTINS.md, "A value is copied by retaining it". */
+
+/* The specification of #40, stated as directly as it can be: evaluating a
+ * symbol hands back the payload the binding already has, not a walk of it. If
+ * this ever starts allocating again, the pointers stop matching. */
+void test_scheme_lifetime_a_variable_reference_shares_the_list_it_names() {
+    SCOPED_GLOBAL_ENV(env) {
+        SummaSchemeValue       defined = {};
+        const SummaSchemeError err     = run_program(env, "(define xs '(1 2 3))", &defined);
+        SUMMA_TEST_ASSERT_MSG(!err.had, err.message);
+        summa_scheme_value_free(&defined);
+
+        SummaSchemeBinding binding = {};
+        SUMMA_TEST_ASSERT(!summa_scheme_environment_get_name(env, summa_scheme_symbol_intern("xs"), &binding).had);
+        SUMMA_TEST_ASSERT_EQ(SummaSchemeListType, binding.value.type);
+
+        SummaSchemeValue referenced = {};
+        SUMMA_TEST_ASSERT(!summa_scheme_evaluate(env, summa_make_scheme_symbol("xs"), &referenced).had);
+        SUMMA_TEST_ASSERT_EQ(SummaSchemeListType, referenced.type);
+        SUMMA_TEST_ASSERT_EQ(binding.value.value.list.value, referenced.value.list.value);
+        SUMMA_TEST_ASSERT(summa_scheme_list_ref_count(referenced.value.list.value) > 1);
+
+        summa_scheme_value_free(&referenced);
+        /* The binding still holds the payload, so the release above was not the
+         * last one and the list is still there to be read. */
+        SUMMA_TEST_ASSERT_EQ(3, binding.value.value.list.value->length);
+    }
+}
+
+/* Two names, one payload. Both are released when the global frame goes, and
+ * exactly once between them. */
+void test_scheme_lifetime_two_names_share_one_list() {
+    assert_prints("(define xs '(1 2 3))"
+                  "(define ys xs)"
+                  "(car (cdr ys))",
+                  "2");
+}
+
+/* The case counting exists for. `grab` holds a handle on the list `xs` names,
+ * and then `set!` replaces the binding while that handle is live. Under a
+ * borrow -- or with the retain in summa_scheme_value_copy taken out -- the
+ * rebind frees the list out from under the argument and `(car l)` reads freed
+ * memory. `summa_scheme_environment_assign` releases rather than frees, which
+ * is what makes this an ordinary program. */
+void test_scheme_lifetime_rebinding_a_shared_list_does_not_free_it() {
+    assert_prints("(define xs '(1 2 3))"
+                  "(define (grab l) (set! xs '(9)) (car l))"
+                  "(grab xs)",
+                  "1");
+}
+
+/* The other direction: the surviving name is the one that was not rebound, and
+ * releasing the rebound handle must not take the payload with it. */
+void test_scheme_lifetime_released_handle_leaves_the_payload_behind() {
+    assert_prints("(define xs '(1 2 3))"
+                  "(define ys xs)"
+                  "(set! xs 0)"
+                  "(car (cdr ys))",
+                  "2");
+}
+
+/* A frame holding the only *second* handle, released at the end of the call.
+ * The binding underneath keeps its own, so the list outlives the frame. */
+void test_scheme_lifetime_frame_release_does_not_free_a_shared_list() {
+    assert_reclaims_every_environment("(define xs '(1 2 3))"
+                                      "(define (peek l) (car l))"
+                                      "(peek xs)"
+                                      "(car (cdr xs))",
+                                      "2");
+}
+
+/* Strings are counted the same way, and `string-ref` is the one builtin that
+ * builds one at runtime -- so this shares a payload and then indexes it after
+ * the sharing handle is gone. */
+void test_scheme_lifetime_two_names_share_one_string() {
+    assert_prints("(define s \"hello\")"
+                  "(define t s)"
+                  "(set! s 0)"
+                  "(string-length t)",
+                  "5");
+}
+
+/* A vector value, which is the same payload type reached through a different
+ * arm of the union. */
+void test_scheme_lifetime_two_names_share_one_vector() {
+    assert_prints("(define v '#(1 2 3))"
+                  "(define w v)"
+                  "(set! v 0)"
+                  "w",
+                  "#(1 2 3)");
+}
+
+/* A counted payload can now hold a procedure, and a procedure holds an
+ * environment -- so a list is a new route from an environment to an
+ * environment. summa_scheme_environment_for_each_edge is the one traversal that
+ * has to see it, and this is what says it does: the closure's frame is
+ * reachable only through the list, and the run has to leave nothing behind. */
+void test_scheme_lifetime_a_list_holding_a_closure_reclaims_its_frame() {
+    assert_reclaims_every_environment("(define (box n) (list (lambda () n)))"
+                                      "(procedure? (car (box 7)))",
+                                      "#t");
+}
+
+/* The same, with the list bound *into* the frame the closure captured -- the
+ * cycle shape, reached through a list rather than through a binding directly.
+ * Counting cannot reclaim it; the collector has to. */
+void test_scheme_lifetime_a_cycle_through_a_list_is_collected() {
+    assert_reclaims_every_environment("(define (make) (define lst (list 1)) (define g (lambda () lst)) (list g))"
+                                      "(procedure? (car (make)))",
+                                      "#t");
+}
+
+/* A payload shared *and* holding a closure is the one case for_each_edge
+ * declines to descend into, so counting is all there is: the frame the closure
+ * captured is reclaimed when the last handle to the list goes, and not by a
+ * collection. Here the last handle goes at the end of each iteration, so fifty
+ * of them accumulate nothing -- which is the property that matters, because a
+ * per-iteration leak is unbounded and a per-program one is not.
+ *
+ * The bounded remainder is real and it is documented: see "What a shared
+ * payload costs the collector" in BUILTINS.md. */
+void test_scheme_lifetime_a_shared_list_holding_a_closure_does_not_accumulate() {
+    assert_reclaims_every_environment(
+        "(define (box n) (list (lambda () n)))"
+        "(define (spin k) (if (zero? k) 0 (begin (let ((one (box k))) (let ((two one)) (car two))) (spin (- k 1)))))"
+        "(spin 50)",
+        "0");
+}
+
+/* Deep nesting through counted payloads, released from the outside in. The
+ * destructor is reentrant, and this is the shape that would blow up if it were
+ * not. */
+void test_scheme_lifetime_nested_lists_are_released_all_the_way_down() {
+    assert_prints("(define xs (list (list (list 1 2) 3) 4))"
+                  "(define ys xs)"
+                  "(set! xs 0)"
+                  "(car (car (car ys)))",
+                  "1");
+}
+
+#pragma endregion Counted payloads
+
 int main(int argc, char** argv) {
     summa_test_begin("scheme.lifetime", argc, argv);
 
@@ -372,6 +522,18 @@ int main(int argc, char** argv) {
     SUMMA_TEST_RUN(test_scheme_lifetime_builtin_failure_frees_its_arguments);
     SUMMA_TEST_RUN(test_scheme_lifetime_moved_procedure_argument_keeps_its_closure);
     SUMMA_TEST_RUN(test_scheme_lifetime_repeated_list_arguments_reclaim_every_frame);
+
+    SUMMA_TEST_RUN(test_scheme_lifetime_a_variable_reference_shares_the_list_it_names);
+    SUMMA_TEST_RUN(test_scheme_lifetime_two_names_share_one_list);
+    SUMMA_TEST_RUN(test_scheme_lifetime_rebinding_a_shared_list_does_not_free_it);
+    SUMMA_TEST_RUN(test_scheme_lifetime_released_handle_leaves_the_payload_behind);
+    SUMMA_TEST_RUN(test_scheme_lifetime_frame_release_does_not_free_a_shared_list);
+    SUMMA_TEST_RUN(test_scheme_lifetime_two_names_share_one_string);
+    SUMMA_TEST_RUN(test_scheme_lifetime_two_names_share_one_vector);
+    SUMMA_TEST_RUN(test_scheme_lifetime_a_list_holding_a_closure_reclaims_its_frame);
+    SUMMA_TEST_RUN(test_scheme_lifetime_a_cycle_through_a_list_is_collected);
+    SUMMA_TEST_RUN(test_scheme_lifetime_a_shared_list_holding_a_closure_does_not_accumulate);
+    SUMMA_TEST_RUN(test_scheme_lifetime_nested_lists_are_released_all_the_way_down);
 
     return summa_test_end();
 }

@@ -17,24 +17,16 @@
     SUMMA_TEST_SCOPED_VALUE(   \
         SummaSchemeEnvironment, var, summa_scheme_environment_make_global(), summa_scheme_environment_free)
 
-#define SCOPED_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaList, var, init, summa_list_free)
+/* A list payload is counted, so releasing the last handle is what frees it --
+ * and the release reaches every value inside. A form and a list of data want
+ * the same scope now; they used to want two, because a bare `summa_list_free`
+ * could not reach elements. */
+#define SCOPED_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaList, var, init, summa_scheme_list_release)
 
 /* A symbol names an interned record the table owns, so the list is all there is
  * to release -- where this used to need a destructor that drained a string out
  * of every element first. */
 #define SCOPED_SYMBOL_LIST(var, init) SUMMA_TEST_SCOPED_VALUE(SummaSchemeSymbolList, var, init, summa_symbol_list_free)
-
-/* A form owns every value pushed into it. summa_scheme_value_free is deep, so
- * it reaches nested forms on its own; what it cannot do is free the outer
- * SummaList, which is a bare handle here rather than a value. */
-static void free_form(SummaList form) {
-    for (size_t i = 0; i < form->length; i++) {
-        summa_scheme_value_free(&form->value[i]);
-    }
-    summa_list_free(form);
-}
-
-#define SCOPED_FORM(var, init) SUMMA_TEST_SCOPED_VALUE(SummaList, var, init, free_form)
 
 #define HELLO "hello"
 #define WORLD "world"
@@ -108,16 +100,18 @@ void test_scheme_evaluate_integer() {
  * procedure fails to apply rather than standing for itself. Quoting is what
  * yields the list as data. */
 void test_scheme_evaluate_list_of_data_is_not_applicable() {
-    SCOPED_GLOBAL_ENV(env)
-    SCOPED_LIST(nested, summa_list_make_empty()) {
+    SCOPED_GLOBAL_ENV(env) {
+        /* The nested list is handed to the outer one and is not scoped
+         * separately: a payload has one owner at a time, and `summa_scheme_list_make`
+         * moves rather than retains. */
         SummaSchemeValue values[5] = {
             summa_make_scheme_boolean(true),
             summa_make_scheme_integer(420),
             summa_make_scheme_floating(3.14),
-            summa_make_scheme_list(nested),
+            summa_make_scheme_list(summa_scheme_list_make_empty()),
             summa_make_scheme_boolean(false),
         };
-        SCOPED_LIST(list, summa_list_make(values, sizeof(values) / sizeof(values[0]))) {
+        SCOPED_LIST(list, summa_scheme_list_make(values, sizeof(values) / sizeof(values[0]))) {
             SummaSchemeValue in    = summa_make_scheme_list(list);
             SummaSchemeValue out   = {};
             SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
@@ -134,7 +128,7 @@ void test_scheme_evaluate_list_of_data_is_not_applicable() {
  * evaluated, so a combination cannot fail halfway. */
 void test_scheme_evaluate_empty_list_is_not_a_combination() {
     SCOPED_GLOBAL_ENV(env)
-    SCOPED_LIST(empty, summa_list_make_empty()) {
+    SCOPED_LIST(empty, summa_scheme_list_make_empty()) {
         SummaSchemeValue in    = summa_make_scheme_list(empty);
         SummaSchemeValue out   = {};
         SummaSchemeError error = summa_scheme_evaluate(env, in, &out);
@@ -147,8 +141,8 @@ void test_scheme_evaluate_empty_list_is_not_a_combination() {
 /* Quoting is the way to get the list itself. */
 void test_scheme_evaluate_quoted_list_is_data() {
     SCOPED_GLOBAL_ENV(env)
-    SCOPED_FORM(form, summa_list_make_empty()) {
-        SummaList quoted = summa_list_make_empty();
+    SCOPED_LIST(form, summa_scheme_list_make_empty()) {
+        SummaList quoted = summa_scheme_list_make_empty();
         summa_list_push(quoted, &summa_make_scheme_integer(1));
         summa_list_push(quoted, &summa_make_scheme_integer(2));
 
@@ -195,7 +189,7 @@ void test_scheme_evaluate_procedure() {
  * it is evaluated into the arguments the call is dispatched with. */
 void test_scheme_evaluate_application_integer() {
     SCOPED_GLOBAL_ENV(env)
-    SCOPED_FORM(form, summa_list_make_empty()) {
+    SCOPED_LIST(form, summa_scheme_list_make_empty()) {
         summa_list_push(form, &summa_make_scheme_symbol("+"));
         summa_list_push(form, &summa_make_scheme_integer(1));
         summa_list_push(form, &summa_make_scheme_integer(2));
@@ -214,7 +208,7 @@ void test_scheme_evaluate_application_integer() {
 /* One floating argument makes the whole sum floating. */
 void test_scheme_evaluate_application_floating() {
     SCOPED_GLOBAL_ENV(env)
-    SCOPED_FORM(form, summa_list_make_empty()) {
+    SCOPED_LIST(form, summa_scheme_list_make_empty()) {
         summa_list_push(form, &summa_make_scheme_symbol("+"));
         summa_list_push(form, &summa_make_scheme_integer(1));
         summa_list_push(form, &summa_make_scheme_floating(2.5));
@@ -231,7 +225,7 @@ void test_scheme_evaluate_application_floating() {
 
 void test_scheme_evaluate_application_no_arguments() {
     SCOPED_GLOBAL_ENV(env)
-    SCOPED_FORM(form, summa_list_make_empty()) {
+    SCOPED_LIST(form, summa_scheme_list_make_empty()) {
         summa_list_push(form, &summa_make_scheme_symbol("+"));
 
         SummaSchemeValue in    = summa_make_scheme_list(form);
@@ -248,8 +242,8 @@ void test_scheme_evaluate_application_no_arguments() {
  * another operand by the time `+` sees it. */
 void test_scheme_evaluate_application_nested() {
     SCOPED_GLOBAL_ENV(env)
-    SCOPED_FORM(form, summa_list_make_empty()) {
-        SummaList inner = summa_list_make_empty();
+    SCOPED_LIST(form, summa_scheme_list_make_empty()) {
+        SummaList inner = summa_scheme_list_make_empty();
         summa_list_push(inner, &summa_make_scheme_symbol("+"));
         summa_list_push(inner, &summa_make_scheme_integer(2));
         summa_list_push(inner, &summa_make_scheme_integer(3));
@@ -270,7 +264,7 @@ void test_scheme_evaluate_application_nested() {
 
 void test_scheme_evaluate_application_non_numeric_argument() {
     SCOPED_GLOBAL_ENV(env)
-    SCOPED_FORM(form, summa_list_make_empty()) {
+    SCOPED_LIST(form, summa_scheme_list_make_empty()) {
         summa_list_push(form, &summa_make_scheme_symbol("+"));
         summa_list_push(form, &summa_make_scheme_integer(1));
         summa_list_push(form, &summa_make_scheme_string(HELLO));
@@ -287,7 +281,7 @@ void test_scheme_evaluate_application_non_numeric_argument() {
  * rather than leaving the form to stand for itself. */
 void test_scheme_evaluate_application_unbound_head() {
     SCOPED_GLOBAL_ENV(env)
-    SCOPED_FORM(form, summa_list_make_empty()) {
+    SCOPED_LIST(form, summa_scheme_list_make_empty()) {
         summa_list_push(form, &summa_make_scheme_symbol(WORLD));
         summa_list_push(form, &summa_make_scheme_integer(1));
 
@@ -311,8 +305,13 @@ void test_scheme_evaluate_string() {
         SUMMA_TEST_ASSERT(!error.had);
         SUMMA_TEST_ASSERT(summa_scheme_value_equals(&in, &out));
 
-        summa_string_free(in.value.string.value);
-        summa_string_free(out.value.string.value);
+        /* Both are handles on the *same* payload -- evaluating a string value
+         * retains it rather than duplicating the characters -- so this is two
+         * releases of one allocation, not two frees. */
+        SUMMA_TEST_ASSERT_EQ(in.value.string.value, out.value.string.value);
+        SUMMA_TEST_ASSERT_EQ(2, summa_scheme_string_ref_count(in.value.string.value));
+        summa_scheme_value_free(&in);
+        summa_scheme_value_free(&out);
     }
 }
 
@@ -338,7 +337,7 @@ void test_scheme_evaluate_vector() {
             summa_make_scheme_floating(3.14),
             summa_make_scheme_floating(420.69),
         };
-        SCOPED_LIST(vector, summa_list_make(values, sizeof(values) / sizeof(values[0]))) {
+        SCOPED_LIST(vector, summa_scheme_list_make(values, sizeof(values) / sizeof(values[0]))) {
             SummaSchemeValue in    = summa_make_scheme_vector(vector);
             SummaSchemeValue out   = {};
             SummaSchemeError error = summa_scheme_evaluate(env, in, &out);

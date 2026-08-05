@@ -17,7 +17,7 @@
 /* No reader yet, so programs are built as values. These keep the forms close
  * enough to Scheme to read. */
 static SummaSchemeValue list_of(const SummaSchemeValue* values, size_t count) {
-    SummaList list = summa_list_make_empty();
+    SummaList list = summa_scheme_list_make_empty();
     for (size_t i = 0; i < count; i++) {
         summa_list_push(list, (SummaSchemeValue*)&values[i]);
     }
@@ -27,7 +27,7 @@ static SummaSchemeValue list_of(const SummaSchemeValue* values, size_t count) {
 #define LIST(...)                                    \
     list_of((const SummaSchemeValue[]){__VA_ARGS__}, \
             sizeof((const SummaSchemeValue[]){__VA_ARGS__}) / sizeof(SummaSchemeValue))
-#define EMPTY_LIST() summa_make_scheme_list(summa_list_make_empty())
+#define EMPTY_LIST() summa_make_scheme_list(summa_scheme_list_make_empty())
 
 #define SYM(name) summa_make_scheme_symbol(name)
 #define INT(value) summa_make_scheme_integer(value)
