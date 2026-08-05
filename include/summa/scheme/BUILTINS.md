@@ -277,10 +277,11 @@ The runaway test that used to live in
 the same reason. `(define (loop) (loop))` is a *tail* call, and now runs as the
 correct non-terminating program it always was.
 
-What is *not* optimized is per-call cost. Every call still mallocs a frame and
-copies each argument into it. Tail calls make a long-running program terminate;
-they do not make it fast. `benchmarks/scheme` prices each of those separately —
-see [Current state](#current-state).
+What is *not* optimized is per-call cost. A call is cheaper than it was — three
+allocations rather than eight, and no copy of what it binds — but it is still
+three allocations and a walk down the environment chain. Tail calls make a
+long-running program terminate; they do not make it fast. `benchmarks/scheme`
+prices each of those separately — see [Current state](#current-state).
 
 ### A name is a pointer, and the table that makes it one
 
@@ -389,18 +390,29 @@ gives the binding count — so both are one exact allocation, and a call that
 binds nothing allocates no element storage at all. See
 [A frame is the size of its call](#a-frame-is-the-size-of-its-call).
 
+An argument is **moved** into the frame rather than copied into it, and the two
+array headers a call used to allocate are now fields of things that were being
+allocated anyway. A call is three allocations where it was eight, and binding a
+list no longer walks it. See
+[An argument is moved into the frame](#an-argument-is-moved-into-the-frame).
+
 **Not done.** `/`, the equality procedures, the remaining type predicates,
 `display` and `newline`.
 
 The remaining structural gap is not depth any more, it is *speed*, and euler
 problem 10 is where it shows: roughly 10^8 Scheme-level calls, each one
-mallocing a frame and deep copying its arguments into it, and finding both the
-procedure and each parameter by walking a linked chain of environments. That
-case is left un-run for exactly that reason. Arguments moved rather than copied
-is what is left of the three obvious buys — and it wants a measurement first
-rather than a guess. The third, a binding lookup that is not a linear scan, has
-had its measurement now, and the measurement said no; see
+mallocing a frame and finding both the procedure and each parameter by walking a
+linked chain of environments. That case is left un-run for exactly that reason.
+
+All three of the obvious buys have had their measurement now, and they did not
+agree. Interning was worth about half of every case. Arguments moved rather than
+copied is worth a quarter to two fifths, and the allocations that went with it
+were worth more than the copy. A binding lookup that is not a linear scan was
+built, measured and taken back out; see
 [The binding lookup is still a scan](#the-binding-lookup-is-still-a-scan-and-the-measurement-is-why).
+What is left is the *other* copy — a variable reference still duplicates the
+value it names — which is issue #40 and a larger question than any of the three,
+because it is about what `SummaSchemeValue` ownership means.
 
 That measurement exists. `benchmarks/scheme` is a set of programs written to
 isolate one cost each, printing wall time, allocations and bytes per call; it is
@@ -408,43 +420,46 @@ built by the ordinary build and run by hand (`make benchmark`), never by
 `ctest`, because a benchmark asserts nothing and a CI run should not pay for
 one. Every case comes in a pair or a series, since the reading that travels
 between machines is the *ratio* between two of them. What it says about the
-evaluator as it stands, Release, on an M-series Mac, with the two columns to its
-left being what it said before interning and before frames were right-sized:
+evaluator as it stands, Release, on an M-series Mac, with the columns to its left
+being what it said before interning, before frames were right-sized, and before
+arguments were moved:
 
-| Reading                                        | Before interning               | Interned                         | Now                                |
-| ---------------------------------------------- | ------------------------------ | -------------------------------- | ---------------------------------- |
-| a user procedure call                          | ~1.2 µs, 15 allocations, 2 KB  | ~0.63 µs, 11 allocations, 1.9 KB | ~0.63 µs, 11 allocations, 0.64 KB  |
-| a call binding nothing, over the loop it is in | +356 ns, +5 allocations, 832 B | +186 ns, +5 allocations, 832 B   | +140 ns, +3 allocations, **128 B** |
-| each argument bound                            | +123 ns, +2 allocations        | +38 ns, **+0 allocations**       | +57 ns, +0 allocations, +88 B      |
-| 32 lexical frames rather than 1                | +52% per call                  | +40% per call                    | +42% per call                      |
-| the last of 256 globals rather than of 8       | +117% per call                 | +41% per call                    | +41% per call                      |
-| a 128-element list argument rather than 1      | 3.3× the time, 9.5× the bytes  | 5.2× the time, 9.7× the bytes    | 5.1× the time, 16.5× the bytes     |
+| Reading                                        | Before interning               | Interned                         | Right-sized                       | Now                                  |
+| ---------------------------------------------- | ------------------------------ | -------------------------------- | --------------------------------- | ------------------------------------ |
+| a user procedure call                          | ~1.2 µs, 15 allocations, 2 KB  | ~0.63 µs, 11 allocations, 1.9 KB | ~0.62 µs, 11 allocations, 0.64 KB | **~0.45 µs, 6 allocations, 0.50 KB** |
+| a call binding nothing, over the loop it is in | +356 ns, +5 allocations, 832 B | +186 ns, +5 allocations, 832 B   | +137 ns, +3 allocations, 128 B    | **+71 ns, +1 allocation, 88 B**      |
+| each argument bound                            | +123 ns, +2 allocations        | +38 ns, **+0 allocations**       | +56 ns, +0 allocations, +88 B     | +57 ns, +0 allocations, +88 B        |
+| 32 lexical frames rather than 1                | +52% per call                  | +40% per call                    | +42% per call                     | +54% per call                        |
+| the last of 256 globals rather than of 8       | +117% per call                 | +41% per call                    | +42% per call                     | +53% per call                        |
+| a 128-element list argument rather than 1      | 3.3× the time, 9.5× the bytes  | 5.2× the time, 9.7× the bytes    | 5.1× the time, 16.5× the bytes    | **4.1× the time, 14.1× the bytes**   |
 
-Two rows want reading carefully.
+The two rightmost columns come from one alternated measurement of the same
+binaries, so they are differences rather than two separate readings of the
+machine; the two on the left are as they were published.
 
-The 128-element case's *ratios* keep getting worse while its absolute cost keeps
-falling, and both times for the same reason: what interning removed, and what
-right-sizing removed, was **fixed** per-call cost. What is left in that case is
-the O(length) copy, which is exactly what the one remaining buy is about.
+Three rows want reading carefully.
 
-And an argument now costs 88 bytes to bind where a moment ago it cost nothing.
-Nothing got worse — 88 is 48 bytes of `SummaSchemeBinding` plus 40 of
-`SummaSchemeValue` argument slot, which is what a binding always was. It used to
-be prepaid out of eight slots the call never asked for, so the third argument
-looked free while the first had already been charged 832 bytes for all eight.
-The cost is the same cost, now visible and now proportional.
+**A frame that binds nothing is now one allocation and 88 bytes**, and 88 bytes
+is the whole of it: a `RefCount` header plus `SummaSchemeEnvironment_t`, with
+the binding array's header inside that block rather than beside it. There is
+nothing else left in a call that binds nothing to remove.
 
-The two lookup rows are the ones that stayed still, and they have since been
-attacked and held. Hashing the frame buys the second row and costs every other
-case more than it is worth, and nothing about hashing touches the first — see
+**The 128-element row finally turned round.** Its ratio had risen for two
+releases running — 3.3× to 5.2× to 5.1× — because everything being removed was
+*fixed* per-call cost, which left the O(length) copy a larger share of what was
+left. Moving the argument takes one of the two copies away, and the ratio falls
+for the first time. It does not flatten, and it was never going to: a variable
+reference still hands back a copy of the value it names, so a list argument is
+still walked once per call. That is issue #40, and this row is what it will be
+read against.
+
+**The two lookup ratios got worse, and nothing about them changed.** The chain
+walk and the global scan cost exactly what they always did; what fell is
+everything they are divided by, so a fixed cost is now a larger fraction of a
+smaller call. That is what a ratio does when the denominator moves, and it is
+the reason absolute columns are kept beside it. Hashing the frame was measured
+against these two rows and lost anyway — see
 [The binding lookup is still a scan](#the-binding-lookup-is-still-a-scan-and-the-measurement-is-why).
-
-One of those readings says something the original list of three did not.
-**Arguments are copied twice per call, not once** —
-`summa_scheme_procedure_frame` makes one, and `summa_scheme_evaluate`'s symbol
-case makes the other, since a variable reference hands back a copy of the bound
-value. Moving arguments into the frame removes one of the two; the per-call cost
-of a list argument stays linear in its length until the other goes as well.
 
 ### A frame is the size of its call
 
@@ -483,14 +498,138 @@ stop euler 10 and 3% is not.
 The reading that points at what to do next is the nullary row: the case that got
 *faster* is the one where a `malloc`/`free` pair disappeared, not the one where
 it shrank. A frame is still five allocations. Folding the binding storage into
-the environment's own block — the trick the interned name already plays with a
-flexible array member — would remove one outright rather than shrink it, and on
-this evidence that is worth more than any amount of sizing.
+the environment's own block would remove one outright rather than shrink it, and
+on this evidence that is worth more than any amount of sizing. That prediction
+was taken up next, and it was right — see
+[An argument is moved into the frame](#an-argument-is-moved-into-the-frame).
 
 Walking a list is bounded by memory rather than by `SUMMA_SCHEME_MAX_DEPTH` when
 the walk is written tail recursively; written the other way —
 `(cons (f (car l)) (map f (cdr l)))` — it still costs a C frame per element, and
 always will, because it has work left to do after the call.
+
+### An argument is moved into the frame
+
+`summa_scheme_apply` evaluates the operands into an argument list, and the frame
+then **takes** each value rather than copying it. The values were evaluated a
+moment ago, for this call and nothing else, so no copy was ever buying anything
+— and for a list argument the copy was the whole list, walked and reallocated on
+every call.
+
+The rule is one sentence and the rest follows from it. **The frame takes all the
+arguments or none of them.** Arity is the only thing that can fail and it is
+checked before the first value changes hands; `args->length` goes to zero
+*before* the first move rather than after the last, so there is no instant at
+which the list and the frame would both free the same value. The storage does
+not move — only who owns what is in it.
+
+Three things stay exactly as they were, and each one is load-bearing:
+
+- **A builtin still borrows.** `summa_scheme_procedure_dispatch_global` gets the
+  same list and the teardown after it is unconditional, so a builtin returning
+  something built out of an argument still has to copy it. Only the
+  user-procedure path moves.
+- **A host still gets a copy.** `summa_scheme_procedure_dispatch` is the entry
+  point for a caller that already has the arguments, and those arguments are the
+  caller's. Both paths go through one frame builder with a `move` flag, so there
+  is one piece of code to keep correct rather than two.
+- **`summa_scheme_environment_set` still frees what it replaces**, which is what
+  makes a duplicated parameter name — `(lambda (x x) …)` — release the first
+  moved value exactly once, from the frame that took it.
+
+`tests/scheme/scheme.lifetime.test.c` carries eleven cases for this, and most of
+them are failures rather than successes: arity wrong in both directions, an
+operand that errors after an earlier one has already allocated, a builtin
+failing with everything still in the list. None of them can go red by printing
+the wrong answer. What reads the verdict is `leaks --atExit` and ASan.
+
+#### Fewer allocations, not smaller ones
+
+[A frame is the size of its call](#a-frame-is-the-size-of-its-call) ended by
+predicting that making an allocation *disappear* would be worth more than
+shrinking one, on the evidence that the only case that got faster there was the
+one where a `malloc`/`free` pair went away. That prediction is the larger half of
+this change.
+
+Two of a call's five allocations were `SummaArray_t` headers — thirty-two bytes
+each, malloc'd and freed per call, sitting beside an owner that was being
+allocated anyway. `summa/array.h` grew `summa_array_init_with_capacity` and
+`summa_array_dispose`: `make_with_capacity` and `free` for a header the caller
+supplies. `init` writes into storage it did not allocate; `dispose` releases the
+elements and leaves the header behind emptied rather than dangling, so an owner
+tearing itself down around one can still enumerate it. Nothing else in the header
+changes, growth included — `elements` is an ordinary heap pointer and `realloc`
+never knew where the header lived.
+
+Two owners take it up:
+
+| Owner                                | Was                            | Is                                                                                     |
+| ------------------------------------ | ------------------------------ | -------------------------------------------------------------------------------------- |
+| `SummaSchemeEnvironment_t::bindings` | a pointer to a malloc'd header | the header, inside the block `ref_count` already allocated                             |
+| `summa_scheme_apply`'s argument list | a malloc'd header              | a C local — an argument list is wanted for exactly the length of the call that made it |
+
+A call is **three** allocations now, and a call that binds nothing and passes
+nothing is **one**: 88 bytes of `RefCount` header plus
+`SummaSchemeEnvironment_t`, and nothing else at all.
+
+#### What it measured
+
+Release, minimum of thirty measured runs per binary, the binaries alternated, ten
+rounds of `--repeat 3` each — the method [A frame is the size of its
+call](#a-frame-is-the-size-of-its-call) landed on, because a single best-of-three
+cannot separate a 3% effect from this machine's drift. Homebrew GCC 13.4 on an
+M-series Mac, with Apple clang alongside.
+
+**Every case is faster under both compilers and no case is slower** — 14% to
+42%, with the two extremes being `args/list-thread-128` at −41% (GCC) / −42%
+(clang) and `lookup/globals-256` at −20% / −14%. Allocations per call fall on
+every case too — by five where a call binds scalars, by twenty on
+`args/list-thread-128` — and bytes per call by 14% to 64%.
+
+The interesting part is not the total, it is which piece bought what. Three
+builds between the baseline and the tip, each adding one thing, and they do not
+overlap at all:
+
+| Piece                        | The list cases                    | The fixed-cost cases           |
+| ---------------------------- | --------------------------------- | ------------------------------ |
+| the exact-capacity list copy | −16 to −20% on `list-thread-128`  | +1 to +5%, i.e. slightly worse |
+| the move                     | a further −25 to −27%             | ~0                             |
+| the two folded headers       | −1 to −5% on the two longest      | **−17 to −31%, every one**     |
+
+**The copy work buys the copies and the allocation work buys the calls, and
+neither buys the other.** `args/list-thread-128` is dominated by walking a
+128-element list, so removing a `malloc` from the frame is worth 1% there;
+`call/nullary` allocates nothing per element, so removing the copy is worth 0%
+there. Two separate costs that happened to be in the same issue.
+
+That makes the folded headers the larger half of this change by a wide margin,
+which is [A frame is the size of its
+call](#a-frame-is-the-size-of-its-call)'s lesson holding for a second time: at
+this scale an allocation *removed* beats an allocation shrunk, and here it also
+beats a copy removed on every case that is not itself a copy.
+
+Two honest notes.
+
+**The exact-capacity list copy costs 1–5% on the cases that do not copy lists**,
+on both compilers, and that is the same allocator effect
+[A frame is the size of its call](#a-frame-is-the-size-of-its-call) documents: a
+procedure body is a list, so copying a procedure value now asks Darwin's `malloc`
+for a smaller block than it used to, and a smaller block is not a cheaper one
+here. It is bought back several times over by the allocations the next commit
+removes, and the tip is faster than the baseline on every case — but the line
+item is real and it is a cost, not a win.
+
+**A control build settles what the move is worth.** The tip's own source with
+`move` turned back to `false`: same call graph, same inlining, same allocation
+counts, only the `summa_scheme_value_copy` back. It is 38–40% slower on
+`args/list-thread-128` under both compilers, which is the move, and it is 5–9%
+slower on the scalar cases *under GCC only* — clang has it between −3% and +3%
+there. So the scalar reading is the compiler's control-flow layout rather than
+the copy, exactly as
+[The binding lookup is still a scan](#the-binding-lookup-is-still-a-scan-and-the-measurement-is-why)
+found. Three changes running now have turned out to be dominated by something
+that was not the evaluator, and a control build is what says which term is being
+read.
 
 ### The binding lookup is still a scan, and the measurement is why
 
