@@ -1,15 +1,8 @@
-# clangd configuration for summa.
-#
-# CMake writes compile_commands.json into build/<preset>/, but clangd only
-# searches a file's ancestor directories and their `build/` subdirectory — it
-# never descends into build/debug/. Point it there explicitly.
-CompileFlags:
-  CompilationDatabase: build/debug
+# clangd configuration for summa. Base flags for every file come from
+# compile_flags.txt at the repo root.
 
----
-# The single-file headers are never compiled directly, so they have no entry in
-# the compile database; clangd infers flags from a "nearby" translation unit.
-# Define every implementation guard so the definition sections are live code
+# The single-file headers are never compiled directly, so their definition
+# sections are normally preprocessed out. Define every implementation guard so the definition sections are live code
 # rather than greyed-out preprocessor blocks.
 If:
   PathMatch: .*include/summa/.*\.h

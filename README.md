@@ -46,18 +46,18 @@ int main(void)
 ## Building
 
 ```sh
-make setup      # Install tools and git hooks
-make configure  # cmake --preset debug
-make build      # cmake --build --preset debug
-make test       # build + ctest --preset debug
+make setup      # Install tools (bazelisk, clang-format) and git hooks
+make build      # bazel build --config=asan //...
+make test       # bazel test --config=asan //...
 make format     # auto-format all .h/.c files
 make check      # dry-run format check (also runs in pre-commit hook)
 ```
 
-Pass `CMAKE_BUILD_TYPE=Release` to any target to switch presets:
+`asan` is a debug build with ASan + UBSan. Pass `CONFIG=release` to any target
+for an optimized build:
 
 ```sh
-make configure CMAKE_BUILD_TYPE=Release
+make test CONFIG=release
 ```
 
 ## License

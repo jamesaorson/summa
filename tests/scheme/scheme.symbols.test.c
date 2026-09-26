@@ -49,8 +49,8 @@ void test_symbols_distinct_names_intern_to_distinct_pointers() {
  * nothing to name again. */
 void test_symbols_reinterning_a_name_does_not_grow_the_table() {
     /* The evaluator interns its own vocabulary -- the special forms, the
-     * builtins -- on the first intern of anything, and each case is its own
-     * process under CTest. Getting that out of the way first is what makes the
+     * builtins -- on the first intern of anything, and this case may run on
+     * its own (`--test_arg=<case>`). Getting that out of the way first is what makes the
      * reading below a difference of one rather than of forty. */
     summa_scheme_symbol_intern(UNIQUE("grow-first"));
 

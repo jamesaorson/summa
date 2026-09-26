@@ -108,8 +108,8 @@ void test_scoped_value_single_statement_body() {
  * What TODO changes is how SUMMA_TEST_RUN classifies a case afterwards, so
  * these run a case inside a case. SUMMA_TEST_RUN both prints and moves the
  * tally, so the surrounding context is put aside and restored -- and the
- * filter is cleared along the way, since ctest invokes this binary with one
- * case name and the nested run would otherwise skip itself.
+ * filter is cleared along the way, since running a single case invokes this
+ * binary with one case name and the nested run would otherwise skip itself.
  *
  * The nested runs print their own "TODO"/"FAIL" lines into the transcript.
  * That is the behaviour being checked, not stray output. */

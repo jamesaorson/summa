@@ -1,0 +1,11 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+# examples/<name>/main.c -> //examples:<name>
+[
+    cc_binary(
+        name = src.removesuffix("/main.c"),
+        srcs = [src],
+        deps = ["//:summa"],
+    )
+    for src in glob(["*/main.c"])
+]

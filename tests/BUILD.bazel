@@ -1,0 +1,15 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+# Every *.test.c anywhere under tests/ becomes a test named after its file
+# (tests/array.test.c -> //tests:array, tests/scheme/euler/scheme.euler.001.test.c
+# -> //tests:scheme.euler.001). Drop a file in and it's picked up.
+[
+    cc_test(
+        name = src.split("/")[-1].removesuffix(".test.c"),
+        srcs = [src] + glob(["**/*.h"]),
+        # Threaded cases use <threads.h> (glibc) or <pthread.h> (macOS).
+        linkopts = ["-pthread"],
+        deps = ["//:summa"],
+    )
+    for src in glob(["**/*.test.c"])
+]

@@ -5,16 +5,10 @@
             "name": "Debug",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${command:cmake.launchTargetPath}",
+            "program": "${workspaceFolder}/bazel-bin/${input:target}",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
-            "environment": [
-                {
-                    "name": "PATH",
-                    "value": "${env:PATH}:${command:cmake.launchTargetDirectory}"
-                }
-            ],
             "externalConsole": false,
             "MIMode": "lldb",
             "osx": {
@@ -23,7 +17,16 @@
             "linux": {
                 "MIMode": "gdb",
                 "miDebuggerPath": "/usr/bin/gdb"
-            }
+            },
+            "preLaunchTask": "build"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "target",
+            "type": "promptString",
+            "description": "Path under bazel-bin (e.g. tests/array, examples/hello)",
+            "default": "tests/array"
         }
     ]
 }
