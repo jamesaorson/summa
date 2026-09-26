@@ -497,7 +497,7 @@ what is left is not a copy at all. See
 That measurement exists. `benchmarks/scheme` is a set of programs written to
 isolate one cost each, printing wall time, allocations and bytes per call; it is
 built by the ordinary build and run by hand (`make benchmark`), never by
-`ctest`, because a benchmark asserts nothing and a CI run should not pay for
+`bazel test`, because a benchmark asserts nothing and a CI run should not pay for
 one. Every case comes in a pair or a series, since the reading that travels
 between machines is the *ratio* between two of them. What it says about the
 evaluator as it stands, Release, on an M-series Mac, with the columns to its left

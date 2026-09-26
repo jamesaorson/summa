@@ -3,9 +3,9 @@
 
 /* Shared harness for the Project Euler suites in this directory.
  *
- * One suite per problem -- scheme.euler.001.test.c and friends -- so ctest
- * gets a case per problem and `ctest -R scheme.euler.003` reruns one on its
- * own. Everything they have in common lives here: the read-evaluate loop, the
+ * One suite per problem -- scheme.euler.001.test.c and friends -- so Bazel
+ * gets a test per problem and `bazel test //tests:scheme.euler.003` reruns one
+ * on its own. Everything they have in common lives here: the read-evaluate loop, the
  * assertion, and the prelude ported from daybreak's helpers.day.
  *
  * Include this after the three summa headers, since it uses their types:

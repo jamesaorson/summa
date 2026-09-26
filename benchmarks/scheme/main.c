@@ -7,7 +7,7 @@
  *
  * It is not a test and deliberately does not live in tests/. A benchmark
  * asserts nothing; it prints numbers, and numbers that move between two builds
- * are the whole point. Putting it under ctest would buy a pass/fail that says
+ * are the whole point. Making it a Bazel test would buy a pass/fail that says
  * nothing and cost every CI run several seconds. It is built by the normal
  * build so it cannot rot, and run by hand -- `make benchmark` -- or not at all.
  *
@@ -169,7 +169,7 @@ typedef struct {
     size_t length;
 } BenchProgram;
 
-static const char* BENCH_NAME = "benchmarks.scheme";
+static const char* BENCH_NAME = "benchmarks/scheme";
 
 static void bench_program_reset(BenchProgram* const program) {
     program->length  = 0;
@@ -739,7 +739,7 @@ int main(const int argc, char** const argv) {
 #ifndef NDEBUG
     printf("Note: NDEBUG is not set, so this is an unoptimized build and these numbers are several times slower\n"
            "      than the evaluator really is. Two such builds still compare honestly; for headline figures run\n"
-           "      `make benchmark CMAKE_BUILD_TYPE=Release`.\n\n");
+           "      `make benchmark CONFIG=release`.\n\n");
 #endif
 
     /* Built on the heap: BenchProgram is a quarter of a megabyte, which is more
@@ -787,7 +787,7 @@ int main(const int argc, char** const argv) {
             fprintf(stderr,
                     "%s: case '%s' ended with %ld allocations still live.\n"
                     "That is a leak in the evaluator, not a benchmark result -- the case's timings mean nothing until "
-                    "it is fixed. `leaks --atExit -- ./build/debug/tests/tests.scheme.lifetime` is where to start.\n",
+                    "it is fixed. `leaks --atExit -- ./bazel-bin/tests/scheme.lifetime` is where to start.\n",
                     BENCH_NAME,
                     bench_case->name,
                     best.net);

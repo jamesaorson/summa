@@ -55,9 +55,8 @@ Initialises the test context and prints the suite header. Call once before any
 | `<binary> <test_name>` | Runs only the test whose function name matches `<test_name>` exactly. |
 | `<binary> --list`      | Prints every test name in the suite, one per line, and runs none.     |
 
-This makes each test case individually runnable from the command line, and is
-what `summa_discover_tests()` (see `cmake/SummaTestDiscover.cmake`) uses to
-register one CTest test per case instead of one per executable.
+This makes each test case individually runnable from the command line, and
+under Bazel too: `bazel test //tests:<name> --test_arg=<test_name>`.
 
 #### `int summa_test_end(void)`
 
@@ -121,9 +120,8 @@ Called by assertion macros on failure. Can be overridden before
 
 Prints one GCC-style line per failure — `<file>:<line>: error: <expr>` (with
 `(<message>)` appended when the macro provides one). This is deliberate: it's
-the format editors and CTest-aware tooling already parse for file:line
-linking, e.g. VS Code's "CMake Test Explorer" extension matches it with its
-default `errorPattern` and places the diagnostic on the exact failing
+the format editors and test tooling already parse for file:line linking
+(VS Code's `$gcc` problem matcher, for one), and it points at the exact failing
 assertion (`__LINE__` at the `SUMMA_TEST_ASSERT*` call site), not just the
 enclosing test function.
 

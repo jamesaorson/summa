@@ -12,8 +12,8 @@ endif
 
 UNAME_S := $(shell uname -s)
 
-CMAKE_BUILD_TYPE ?= Debug
-CMAKE_PRESET := $(shell echo $(CMAKE_BUILD_TYPE) | tr '[:upper:]' '[:lower:]')
+# asan (debug + ASan/UBSan, the default) or release. See .bazelrc.
+CONFIG ?= asan
 
 .PHONY: setup
 setup: setup/hooks setup/tools ## Install all dependencies and development tools
@@ -29,9 +29,10 @@ ifeq ($(UNAME_S),Linux)
 	sudo apt-get update
 	sudo apt-get install -y \
 		build-essential \
-		gdb \
-		cmake \
-		ninja-build
+		gdb
+	sudo curl -fsSL -o /usr/local/bin/bazel \
+		"https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-$$(dpkg --print-architecture)"
+	sudo chmod +x /usr/local/bin/bazel
 	curl -o /tmp/llvm.sh https://apt.llvm.org/llvm.sh
 	chmod +x /tmp/llvm.sh
 	sudo /tmp/llvm.sh 22
@@ -40,11 +41,8 @@ ifeq ($(UNAME_S),Linux)
 else ifeq ($(UNAME_S),Darwin)
 	xcode-select -p >/dev/null 2>&1 || xcode-select --install
 	brew install \
-		cmake \
-		ninja \
-		clang-format \
-		gcc-13
-	
+		bazelisk \
+		clang-format
 else
 	echo "Unsupported OS: $(UNAME_S)"
 	exit 1
@@ -52,19 +50,14 @@ endif
 
 .PHONY: benchmark
 benchmark: ## Build and run the scheme evaluator benchmark (BENCHMARK_ARGS="--help" for its options)
-	if [ ! -d "build/$(CMAKE_PRESET)" ]; then
-		echo "No build directory for the $(CMAKE_PRESET) preset yet — configuring first."
-		$(MAKE) configure
+	if [ "$(CONFIG)" != "release" ]; then
+		echo "Building with --config=$(CONFIG); run 'make benchmark CONFIG=release' for numbers worth quoting."
 	fi
-	if [ "$(CMAKE_BUILD_TYPE)" != "Release" ]; then
-		echo "Building $(CMAKE_BUILD_TYPE); run 'make benchmark CMAKE_BUILD_TYPE=Release' for numbers worth quoting."
-	fi
-	cmake --build --preset $(CMAKE_PRESET) --target benchmarks.scheme
-	./build/$(CMAKE_PRESET)/benchmarks/benchmarks.scheme $(BENCHMARK_ARGS)
+	bazel run --config=$(CONFIG) //benchmarks:scheme -- $(BENCHMARK_ARGS)
 
 .PHONY: build
 build: ## Build all targets (library is header-only; builds tests, examples and benchmarks)
-	cmake --build --preset $(CMAKE_PRESET)
+	bazel build --config=$(CONFIG) //...
 
 .PHONY: check
 check: check/c check/markdown ## Check formatting
@@ -79,11 +72,7 @@ check/markdown: ## Check formatting for markdown
 
 .PHONY: clean
 clean: ## Remove build artifacts
-	cmake --build build/$(CMAKE_PRESET) --target clean
-
-.PHONY: configure
-configure: ## Configure CMake cache
-	cmake --preset $(CMAKE_PRESET)
+	bazel clean
 
 .PHONY: format
 format: format/c format/markdown ## Format all files
@@ -94,9 +83,8 @@ format/c: ## Format all source files
 
 .PHONY: format/c/common
 format/c/common: ## Format common source files
-	find . -type f \( -name "*.h" -o -name "*.c" \) \
-		-not -path "./build/*" \
-		-print0 | xargs -0 clang-format $(CLANG_FORMAT_OPTIONS)
+	git ls-files -z --cached --others --exclude-standard '*.h' '*.c' \
+		| xargs -0 clang-format $(CLANG_FORMAT_OPTIONS)
 
 .PHONY: format/markdown
 format/markdown: ## Format all markdown files
@@ -104,8 +92,7 @@ format/markdown: ## Format all markdown files
 
 .PHONY: test
 test: ## Build and run all tests
-	cmake --build --preset $(CMAKE_PRESET)
-	ctest --preset $(CMAKE_PRESET)
+	bazel test --config=$(CONFIG) //...
 
 env-%: ## Verify a required environment variable is set
 	if [ -z "$($*)" ]; then \

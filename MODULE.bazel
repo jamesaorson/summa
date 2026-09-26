@@ -1,0 +1,4 @@
+module(name = "summa", version = "0.1.0")
+
+# Build rules only (Bazel 9 no longer ships cc_* natively) — not a library dep.
+bazel_dep(name = "rules_cc", version = "0.2.25")

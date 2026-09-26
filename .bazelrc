@@ -1,0 +1,27 @@
+# C23, no extensions, warnings are errors. c2x rather than c23 so GCC 13 accepts it.
+build --conlyopt=-std=c2x --conlyopt=-Wall --conlyopt=-Wextra --conlyopt=-Wpedantic --conlyopt=-Werror
+# summa/array.h's SUMMA_ARRAY_GENERATE_TYPE_* macros give every generated
+# collection type (SummaList, SummaHashMapKeys, ...) the same field layout as
+# SummaArray_t and reinterpret-cast between them. Legal by layout, not by
+# strict aliasing: GCC's TBAA can cache a read across a write made through the
+# other type's pointer and go stale under -O2/-O3 (observed as
+# summa_hash_map_copy's length update not being visible to the caller). Every
+# consumer of the headers needs this, and Bazel can't propagate copts from a
+# cc_library, so it lives here.
+build --conlyopt=-fno-strict-aliasing
+
+test --test_output=errors
+
+# Debug: -g plus AddressSanitizer + UndefinedBehaviorSanitizer (UB is fatal).
+# -O1, not -O0: ASan's redzones make -O0 frames big enough that the scheme
+# tests' SUMMA_SCHEME_MAX_DEPTH recursion overflows an 8 MB stack under clang.
+build:asan -c dbg --copt=-O1
+# The toolchain features rather than raw -fsanitize copts, so each toolchain
+# drops whatever conflicts with them (Apple's -D_FORTIFY_SOURCE, for one).
+build:asan --features=asan --features=ubsan
+
+# Release.
+build:release -c opt
+
+# Share outputs across branches and clean builds.
+build --disk_cache=~/.cache/bazel-disk

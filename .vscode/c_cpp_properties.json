@@ -2,7 +2,7 @@
     "enableConfigurationSquiggles": true,
     "configurations": [
         {
-            "name": "CMake Debug",
+            "name": "summa",
             "includePath": [
                 "${workspaceFolder}/include"
             ],
@@ -17,32 +17,13 @@
             "compilerPath": "/usr/bin/gcc",
             "cStandard": "c23",
             "intelliSenseMode": "${default}",
-            "compileCommands": "${workspaceFolder}/build/debug/compile_commands.json",
             "macFrameworkPath": [
                 "/System/Library/Frameworks",
                 "/Library/Frameworks"
-            ]
-        },
-        {
-            "name": "CMake Release",
-            "includePath": [
-                "${workspaceFolder}/include"
             ],
-            "defines": [
-                "SUMMA_ARRAY_IMPLEMENTATION",
-                "SUMMA_HASH_MAP_IMPLEMENTATION",
-                "SUMMA_HASH_SET_IMPLEMENTATION",
-                "SUMMA_REF_COUNT_IMPLEMENTATION",
-                "SUMMA_SCHEME_IMPLEMENTATION",
-                "SUMMA_STRING_IMPLEMENTATION"
-            ],
-            "compilerPath": "/usr/bin/gcc",
-            "cStandard": "c23",
-            "intelliSenseMode": "${default}",
-            "compileCommands": "${workspaceFolder}/build/release/compile_commands.json",
-            "macFrameworkPath": [
-                "/System/Library/Frameworks",
-                "/Library/Frameworks"
+            "compilerArgs": [
+                "-std=c2x",
+                "-fno-strict-aliasing"
             ]
         }
     ],

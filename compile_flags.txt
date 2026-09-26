@@ -1,0 +1,6 @@
+-std=c2x
+-Iinclude
+-Wall
+-Wextra
+-Wpedantic
+-fno-strict-aliasing

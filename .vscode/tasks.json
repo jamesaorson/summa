@@ -4,8 +4,12 @@
         {
             "label": "build",
             "type": "shell",
-            "command": "cmake",
-            "args": ["--build", "--preset", "debug"],
+            "command": "bazel",
+            "args": [
+                "build",
+                "--config=asan",
+                "//..."
+            ],
             "options": {
                 "cwd": "${workspaceFolder}"
             },
@@ -13,7 +17,9 @@
                 "kind": "build",
                 "isDefault": true
             },
-            "problemMatcher": ["$gcc"],
+            "problemMatcher": [
+                "$gcc"
+            ],
             "presentation": {
                 "reveal": "silent",
                 "panel": "shared",

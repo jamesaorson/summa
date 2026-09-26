@@ -23,16 +23,17 @@ Two distinct kinds of output live here:
 - Only the C23 standard library is permitted inside `include/summa/`.
 - Applications may use summa headers as building blocks, but still no third-party
   runtime deps. Write the utility code you need as a summa header first, then use it.
-- Do not add `FetchContent_Declare` calls for anything. The answer to
+- Do not add a `bazel_dep` for anything but `rules_cc` (build rules, not code). The answer to
   "can I pull in lib X?" is always "write it as a summa header instead."
 - The test framework is `summa/test/test.h` — in-repo, zero external deps.
 
 ### C23, No Extensions
 
-- `LANGUAGES C`, `CMAKE_C_STANDARD 23`, `CMAKE_C_EXTENSIONS OFF`.
+- `-std=c2x` (C23; the `c2x` spelling so GCC 13 accepts it), set once in `.bazelrc`.
 - No compiler-specific extensions (`__attribute__`, `#pragma once`, etc.) unless
   guarded by a feature macro and with a portable fallback.
-- All code must compile clean under `-Wall -Wextra -Wpedantic -Werror`.
+- All code must compile clean under `-Wall -Wextra -Wpedantic -Werror` (also
+  `.bazelrc`, so every target gets them).
 
 ---
 
@@ -42,7 +43,7 @@ Two distinct kinds of output live here:
 include/summa/          # Public headers — one .h per library
 tests/                  # Test files — one .test.c per library
 examples/               # Usage examples — one subdir per library
-benchmarks/             # Benchmarks — built by the normal build, never run by ctest
+benchmarks/             # Benchmarks — built by the normal build, never run by `bazel test`
 docs/                   # Reference docs (e.g. r7rs-small.pdf)
 git/hooks/              # Dev hooks (install via make setup/hooks)
 <app>/                  # Application subdirectories (scheme/, engine/, …)
@@ -53,17 +54,20 @@ git/hooks/              # Dev hooks (install via make setup/hooks)
 ## Dev Workflow
 
 ```sh
-make setup       # Install tools + git hooks (run once)
-make configure   # cmake --preset debug (or release via CMAKE_BUILD_TYPE=Release)
-make build       # cmake --build --preset debug
-make test        # build + ctest --preset debug
+make setup       # Install tools (bazelisk, clang-format) + git hooks (run once)
+make build       # bazel build --config=asan //...
+make test        # bazel test --config=asan //...
 make format      # clang-format -i all .h/.c files
 make check       # clang-format --dry-run --Werror (runs in pre-commit hook)
-make benchmark   # build + run benchmarks/scheme (add CMAKE_BUILD_TYPE=Release for real numbers)
+make benchmark   # bazel run //benchmarks:scheme (add CONFIG=release for real numbers)
 ```
 
-CI matrices over `Debug` and `Release`. Debug runs ASan + UBSan. Always keep both
-green.
+`CONFIG` is a `.bazelrc` config: `asan` (the default — debug build with ASan +
+UBSan) or `release` (`-c opt`). Plain `bazel build //...` / `bazel test //...`
+work too, with neither. Run one test case on its own with
+`bazel test //tests:<name> --test_arg=<case>`.
+
+CI matrices over `asan` and `release`. Always keep both green.
 
 ---
 
@@ -148,11 +152,9 @@ int main(int argc, char** argv)
 }
 ```
 
-Nothing to register: `tests/CMakeLists.txt` globs `tests/*.test.c` and wires
-up each file automatically — the executable (`tests.<name>`, strict flags +
-ASan/UBSan via `summa_add_test()`), plus one CTest test per case
-(`<name>.<case>`, via `summa_discover_tests()` in
-`cmake/SummaTestDiscover.cmake`). Just drop the file in and build.
+Nothing to register: `tests/BUILD.bazel` globs `tests/**/*.test.c` and makes
+each file a `cc_test` named after it (`tests/array.test.c` → `//tests:array`).
+Just drop the file in and build.
 
 #### Scope every allocation
 
@@ -203,46 +205,44 @@ manual. If a manual `free` is genuinely unavoidable, say why in a comment.
 
 #### Checking for leaks locally
 
-CI runs ASan/UBSan on Linux, but the sanitizers are **switched off for GCC on
-macOS** (`tests/CMakeLists.txt`), and LeakSanitizer doesn't run on Darwin at
-all — so a leak introduced locally will not fail `make test`. Use `leaks`
-instead:
+CI runs ASan/UBSan (with LeakSanitizer) on Linux, but LeakSanitizer doesn't run
+on Darwin — so a leak introduced locally will not fail `make test`. Use `leaks`
+on a build without ASan instead:
 
 ```sh
-leaks --atExit -- ./build/debug/tests/tests.<name>
+bazel build -c dbg //tests:<name>
+leaks --atExit -- ./bazel-bin/tests/<name>
 ```
 
-### 3. Add an example — `examples/<name>/main.c` + `examples/CMakeLists.txt`
+### 3. Add an example — `examples/<name>/main.c`
 
-Add `<name>` to the `ALL_EXAMPLES` list in `examples/CMakeLists.txt`, then
-write a minimal `examples/<name>/main.c` that shows idiomatic usage.
+Write a minimal `examples/<name>/main.c` that shows idiomatic usage.
+`examples/BUILD.bazel` globs it into `//examples:<name>`.
 
 ---
 
 ## Adding an Application
 
 Applications (Scheme interpreter, game engine, etc.) live in their own top-level
-subdirectory and are wired into the root `CMakeLists.txt` via `add_subdirectory`.
+subdirectory with its own `BUILD.bazel`.
 
 Guidelines:
 
-- The application's own `CMakeLists.txt` owns its targets, flags, and install rules.
-- It may link against `summa::summa` freely.
+- The application's own `BUILD.bazel` owns its targets.
+- It may depend on `//:summa` freely.
 - It must still have zero external runtime dependencies — use or extend summa headers
   for any utility code the application needs.
 - It produces a binary (executable) or a library target, not a header.
-- Add a `SUMMA_BUILD_<APP>` option in the root `CMakeLists.txt` following the
-  existing pattern for `SUMMA_BUILD_TESTS` and `SUMMA_BUILD_EXAMPLES`.
 
 ---
 
 ## Adding a Benchmark
 
-Add `<name>` to the `ALL_BENCHMARKS` list in `benchmarks/CMakeLists.txt` and
-write `benchmarks/<name>/main.c`. It builds like an example — strict flags, no
-sanitizers — and is deliberately **not** registered with CTest, so `make test`
-never pays for it while a benchmark that stopped compiling still fails the
-build. `make benchmark` runs it.
+Write `benchmarks/<name>/main.c`; `benchmarks/BUILD.bazel` globs it into
+`//benchmarks:<name>`. It builds like an example and is deliberately a
+`cc_binary`, **not** a `cc_test`, so `make test` never pays for it while a
+benchmark that stopped compiling still fails `bazel build //...`.
+`make benchmark` runs it.
 
 A benchmark prints numbers; it asserts nothing. Keep the output one line per
 case in a fixed order so two runs diff to what moved, and give it a `--help`
@@ -254,8 +254,8 @@ like any other CLI here.
 
 - Do not add third-party headers to `include/summa/`.
 - Do not `#include` non-standard headers inside a summa header.
-- Do not hand-add `add_executable`/`add_test` entries for a library test —
-  `tests/CMakeLists.txt` discovers `tests/*.test.c` automatically.
+- Do not hand-add `cc_test` entries for a library test —
+  `tests/BUILD.bazel` discovers `tests/**/*.test.c` automatically.
 - Do not commit without running `make check` (the pre-commit hook enforces this).
 - Do not open a PR without a linked issue (`Closes #N` in the description).
 - Do not merge your own PRs.

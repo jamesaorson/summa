@@ -167,7 +167,7 @@ int64_t summa_test_random_integer_between(int64_t min, int64_t max);
 /* Spawn/join shim for threaded test cases. C11 <threads.h> is the preferred
  * path and is used wherever the platform ships it (glibc); macOS does not, so
  * it falls back to POSIX <pthread.h>. Both need a link flag, which
- * tests/CMakeLists.txt supplies to every test target via Threads::Threads.
+ * tests/BUILD.bazel supplies to every test target as -pthread.
  *
  * A thread body is written against the two macros rather than a fixed
  * signature, since the two backends disagree on the return type:
@@ -236,7 +236,7 @@ summa_test_ctx_t summa_test_ctx;
 
 void summa_test_begin(const char* suite_name, int argc, char** argv) {
     /* Line-buffer stdout before anything is written to it. A pipe -- which is
-     * what ctest hands the binary -- would otherwise make stdout fully
+     * what `bazel test` hands the binary -- would otherwise make stdout fully
      * buffered and flush the whole transcript at exit, while stderr stays
      * unbuffered. Anything a test logs to stderr then lands ahead of every
      * line this framework printed, and the captured output reads out of order.
@@ -279,8 +279,8 @@ int summa_test_end(void) {
 }
 
 /* GCC-style "file:line: error: message" — recognized as-is by editors and
- * tools that link file:line references (including the default errorPattern
- * in VS Code's "CMake Test Explorer" extension).
+ * tools that link file:line references (VS Code's $gcc problem matcher, for
+ * one).
  *
  * A case marked SUMMA_TEST_TODO reports "note:" instead, since its failure is
  * the expected state rather than a defect; tooling that highlights errors then

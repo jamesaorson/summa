@@ -1,0 +1,12 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+# benchmarks/<name>/main.c -> //benchmarks:<name>. Built by `bazel build //...`
+# so a benchmark cannot rot; not a cc_test, so `bazel test` never runs one.
+[
+    cc_binary(
+        name = src.removesuffix("/main.c"),
+        srcs = [src],
+        deps = ["//:summa"],
+    )
+    for src in glob(["*/main.c"])
+]

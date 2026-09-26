@@ -13,26 +13,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build_type: [Debug, Release]
-    name: ci (${{ matrix.build_type }})
+        # asan: debug + ASan/UBSan. release: -c opt. See .bazelrc.
+        config: [asan, release]
+    name: ci (${{ matrix.config }})
     env:
-      CMAKE_BUILD_TYPE: ${{ matrix.build_type }}
+      CONFIG: ${{ matrix.config }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      - name: Install dependencies
-        run: |
-          make setup
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          # Keyed per OS/arch (by the action) and per config (here), so the
+          # asan and opt outputs never overwrite each other.
+          disk-cache: ${{ matrix.config }}
 
       - name: Check versions
         run: |
-          clang-format --version
-          gcc-13 --version
-
-      - name: Configure
-        run: |
-          make configure
+          bazel --version
+          gcc --version
 
       - name: Build
         run: |
@@ -42,10 +44,15 @@ jobs:
         run: |
           make test
 
+      - name: Collect examples
+        if: matrix.config == 'release'
+        run: |
+          mkdir -p dist
+          find bazel-bin/examples/ -maxdepth 1 -type f -perm -u+x -exec cp {} dist/ \;
+
       - name: Upload examples
-        if: matrix.build_type == 'Release'
+        if: matrix.config == 'release'
         uses: actions/upload-artifact@v7
         with:
           name: summa-examples
-          path: |
-            build/examples/examples.*
+          path: dist/*
